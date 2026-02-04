@@ -306,12 +306,12 @@ class TractApp(QMainWindow):
             self.canvas_spec.axes.clear()
             if tb.unit_converter:
                 ppm_scale = tb.unit_converter.ppm_scale()
-                self.canvas_spec.axes.plot(ppm_scale, trace, label="First Trace")
+                self.canvas_spec.axes.plot(ppm_scale, trace, label="First Plane")
                 self.canvas_spec.axes.invert_xaxis()
                 self.canvas_spec.axes.set_xlabel(r"$^{1}H (ppm)$")
                 self.canvas_spec.axes.set_ylabel("Intensity")
             else:
-                self.canvas_spec.axes.plot(trace, label="First Trace")
+                self.canvas_spec.axes.plot(trace, label="First Plane")
             self.canvas_spec.axes.legend()
 
             self.selector = SpanSelector(
@@ -364,8 +364,8 @@ class TractApp(QMainWindow):
             x, y_a, y_b, popt_a, popt_b = tb.get_fit_data()
 
             self.canvas_fit.axes.clear()
-            self.canvas_fit.axes.plot(x, y_a, "bo", label="Alpha (Anti-TROSY)")
-            self.canvas_fit.axes.plot(x, y_b, "ro", label="Beta (TROSY)")
+            self.canvas_fit.axes.plot(x, y_a, "bo", label=r"$\alpha -spin\ state$")
+            self.canvas_fit.axes.plot(x, y_b, "ro", label=r"$\beta -spin\ state$")
             self.canvas_fit.axes.plot(
                 x, processing.TractBruker._relax(x, *popt_a), "b-"
             )
