@@ -35,9 +35,9 @@ uvx pytractnmr
 
 #### Using pip
 
-'''bash
+```bash
 pip install pyTRACTnmr
-'''
+```
 
 #### From Source
 
