@@ -198,6 +198,7 @@ class TractApp(QMainWindow):
         self.input_csa = QLineEdit("160")
         self.input_angle = QLineEdit("17")
         self.input_s2 = QLineEdit("1.0")
+        self.input_bootstraps = QLineEdit("1000")
         self.btn_fit = QPushButton("Calculate Tau_c")
         self.btn_fit.clicked.connect(self.run_fitting)
         self.lbl_results = QLabel("Results will appear here.")
@@ -207,6 +208,7 @@ class TractApp(QMainWindow):
         layout_t2.addRow("CSA (ppm):", self.input_csa)
         layout_t2.addRow("CSA Angle (deg):", self.input_angle)
         layout_t2.addRow("Order Parameter (S2):", self.input_s2)
+        layout_t2.addRow("Bootstraps:", self.input_bootstraps)
         layout_t2.addRow(self.btn_fit)
         layout_t2.addRow(self.lbl_results)
         tab2.setLayout(layout_t2)
@@ -354,12 +356,21 @@ class TractApp(QMainWindow):
             tb.CSA_BOND_ANGLE = float(self.input_angle.text()) * np.pi / 180
             s2_val = float(self.input_s2.text())
 
+            try:
+                n_boot = int(self.input_bootstraps.text())
+                if n_boot < 10:
+                    n_boot = 10
+                    self.input_bootstraps.setText("10")
+            except ValueError:
+                n_boot = 1000
+                self.input_bootstraps.setText("1000")
+
             tb.split_process(p0, p1, points=points, off=off, end=end_param, pow=pow_val)
             tb.integrate_ppm(start_ppm, end_ppm)
             tb.calc_relaxation()
 
             b0 = float(self.input_field.text()) if self.input_field.text() else None
-            tb.calc_tc(B0=b0, S2=s2_val)
+            tb.calc_tc(B0=b0, S2=s2_val, n_bootstrap=n_boot)
 
             x, y_a, y_b, popt_a, popt_b = tb.get_fit_data()
 
