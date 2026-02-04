@@ -1,0 +1,1 @@
+This is a simple GUI application for processing and Analysing TRACT data. Currently this only supports collected with Bruker spectrometers with pulseprogram `tractf3gpphwg`.
