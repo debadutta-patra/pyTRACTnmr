@@ -1,7 +1,7 @@
 [project]
-name = "tract-gui"
+name = "pyTRACTnmr"
 version = "0.1.0"
-description = "Add your description here"
+description = "A simple gui based application to process and analyse TRACT data from NMR spectroscopy."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
