@@ -1,6 +1,6 @@
 # pyTRACTnmr
 
-**pyTRACTnmr** is a graphical user interface (GUI) application designed for the processing and analysis of TRACT (TROSY for Rotational Correlation Times) experiments in NMR spectroscopy. It provides a streamlined workflow to go from raw Bruker data to calculated rotational correlation times ($\tau_c$) with robust error estimation. Currently this only supports collected with Bruker spectrometers with pulseprogram `tractf3gpphwg`.
+**pyTRACTnmr** is a graphical user interface (GUI) application designed for the processing and analysis of TRACT (TROSY for Rotational Correlation Times) experiments in NMR spectroscopy. It provides a streamlined workflow to go from raw Bruker data to calculated rotational correlation times ($\tau_c$) with robust error estimation. Currently this only supports data collected with Bruker spectrometers using pulseprogram `tractf3gpphwg`.
 
 ## Features
 
