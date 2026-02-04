@@ -25,9 +25,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, QPoint
 
-from widgets import MplCanvas, CustomNavigationToolbar
 from matplotlib.widgets import SpanSelector
-import processing
+try:
+    from .widgets import MplCanvas, CustomNavigationToolbar
+    from . import processing
+except ImportError:
+    from widgets import MplCanvas, CustomNavigationToolbar
+    import processing
 
 
 class TractApp(QMainWindow):

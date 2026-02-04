@@ -1,9 +1,15 @@
 import sys
 from PySide6.QtWidgets import QApplication
-from window import TractApp
+try:
+    from .window import TractApp
+except ImportError:
+    from window import TractApp
 
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
     window = TractApp()
     window.show()
     sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
