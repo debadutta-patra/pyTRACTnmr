@@ -1,4 +1,5 @@
 import os
+import csv
 import numpy as np
 from typing import List, Dict, Any, Optional
 from PySide6.QtWidgets import (
@@ -53,20 +54,19 @@ class TractApp(QMainWindow):
 
         # --- Panel 1: Data Loading ---
         panel1 = QGroupBox("Experiment Info")
-        panel1.setFixedWidth(500)
         layout1 = QVBoxLayout()
 
         self.btn_load = QPushButton("Load Bruker Directory")
         self.btn_load.clicked.connect(self.load_data)
 
-        self.edit_sample_name = QLineEdit()
-        self.edit_sample_name.setPlaceholderText("Sample Name")
-        self.edit_sample_name.editingFinished.connect(self.update_sample_name)
+        self.current_experiment = QLineEdit()
+        self.current_experiment.setPlaceholderText("Current Experiment")
+        self.current_experiment.setReadOnly(True)
 
         self.table_data = QTableWidget()
-        self.table_data.setColumnCount(4)
+        self.table_data.setColumnCount(9)
         self.table_data.setHorizontalHeaderLabels(
-            ["Experiment", "Temperature (K)", "Delays", "Tau_C (ns)"]
+            ["Experiment", "Temperature (K)", "Delays", "Ra (Hz)", "Rb (Hz)", "Tau_C (ns)", "Err Ra", "Err Rb", "Err Tau_C"]
         )
         self.table_data.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
@@ -84,8 +84,8 @@ class TractApp(QMainWindow):
         layout1.addWidget(QLabel("Load Data:"))
         layout1.addWidget(self.btn_load)
         layout1.addSpacing(10)
-        layout1.addWidget(QLabel("Sample Name:"))
-        layout1.addWidget(self.edit_sample_name)
+        layout1.addWidget(QLabel("Current Experiment:"))
+        layout1.addWidget(self.current_experiment)
         layout1.addSpacing(10)
         layout1.addWidget(self.table_data)
         layout1.addStretch()
@@ -123,7 +123,6 @@ class TractApp(QMainWindow):
 
         # --- Panel 3: Controls ---
         panel3 = QTabWidget()
-        panel3.setFixedWidth(300)
 
         # Tab 1: Processing
         tab1 = QWidget()
@@ -215,9 +214,12 @@ class TractApp(QMainWindow):
         panel3.addTab(tab1, "Processing")
         panel3.addTab(tab2, "Fitting")
 
-        main_layout.addWidget(panel1)
-        main_layout.addWidget(splitter_center)
-        main_layout.addWidget(panel3)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.addWidget(panel1)
+        main_splitter.addWidget(splitter_center)
+        main_splitter.addWidget(panel3)
+        main_splitter.setSizes([400, 500, 300])
+        main_layout.addWidget(main_splitter)
 
     def create_slider_layout(self, slider: QSlider, label: QWidget) -> QWidget:
         widget = QWidget()
@@ -387,6 +389,24 @@ class TractApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Fit Error", str(e))
 
+    def export_table_to_csv(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV Files (*.csv)")
+        if not path:
+            return
+        try:
+            with open(path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                headers = []
+                for col in range(self.table_data.columnCount()):
+                    item = self.table_data.horizontalHeaderItem(col)
+                    headers.append(item.text() if item else "")
+                writer.writerow(headers)
+                for row in range(self.table_data.rowCount()):
+                    row_data = [self.table_data.item(row, col).text() if self.table_data.item(row, col) else "" for col in range(self.table_data.columnCount())]
+                    writer.writerow(row_data)
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))
+
     def update_table(self) -> None:
         self.table_data.blockSignals(True)
         self.table_data.setRowCount(len(self.datasets))
@@ -413,13 +433,32 @@ class TractApp(QMainWindow):
             item_delays.setFlags(item_delays.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_data.setItem(i, 2, item_delays)
 
+            # Helper for values
+            def get_val(attr):
+                if hasattr(ds["handler"], attr):
+                    return f"{getattr(ds['handler'], attr):.2f}"
+                return "N/A"
+
+            # Ra
+            item_ra = QTableWidgetItem(get_val("Ra"))
+            item_ra.setFlags(item_ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table_data.setItem(i, 3, item_ra)
+
+            # Rb
+            item_rb = QTableWidgetItem(get_val("Rb"))
+            item_rb.setFlags(item_rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table_data.setItem(i, 4, item_rb)
+
             # Tau_C
-            tau_val = "N/A"
-            if hasattr(ds["handler"], "tau_c"):
-                tau_val = f"{ds['handler'].tau_c:.2f}"
-            item_tau = QTableWidgetItem(tau_val)
+            item_tau = QTableWidgetItem(get_val("tau_c"))
             item_tau.setFlags(item_tau.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_data.setItem(i, 3, item_tau)
+            self.table_data.setItem(i, 5, item_tau)
+
+            # Errors
+            for col, attr in enumerate(["err_Ra", "err_Rb", "err_tau_c"], start=6):
+                item_err = QTableWidgetItem(get_val(attr))
+                item_err.setFlags(item_err.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table_data.setItem(i, col, item_err)
 
         self.table_data.blockSignals(False)
 
@@ -435,7 +474,7 @@ class TractApp(QMainWindow):
             if row < len(self.datasets):
                 self.datasets[row]["name"] = new_name
                 if row == self.current_idx:
-                    self.edit_sample_name.setText(new_name)
+                    self.current_experiment.setText(new_name)
 
     def switch_dataset(self, index: int) -> None:
         if index < 0 or index >= len(self.datasets):
@@ -444,7 +483,7 @@ class TractApp(QMainWindow):
         ds = self.datasets[index]
         tb = ds["handler"]
 
-        self.edit_sample_name.setText(ds["name"])
+        self.current_experiment.setText(ds["name"])
 
         # Update Field Strength from parameters
         try:
@@ -506,7 +545,7 @@ class TractApp(QMainWindow):
 
     def update_sample_name(self) -> None:
         if self.current_idx >= 0:
-            name = self.edit_sample_name.text()
+            name = self.current_experiment.text()
             self.datasets[self.current_idx]["name"] = name
             self.update_table()
 
@@ -514,12 +553,16 @@ class TractApp(QMainWindow):
         menu = QMenu()
         action_change = QAction("Change Experiment", self)
         action_delete = QAction("Delete Experiment", self)
+        action_export = QAction("Export Table to CSV", self)
 
         action_change.triggered.connect(self.change_experiment)
         action_delete.triggered.connect(self.delete_experiment)
+        action_export.triggered.connect(self.export_table_to_csv)
 
         menu.addAction(action_change)
         menu.addAction(action_delete)
+        menu.addSeparator()
+        menu.addAction(action_export)
         menu.exec(self.table_data.mapToGlobal(pos))
 
     def change_experiment(self) -> None:
@@ -559,7 +602,7 @@ class TractApp(QMainWindow):
             self.canvas_spec.draw()
             self.canvas_fit.axes.clear()
             self.canvas_fit.draw()
-            self.edit_sample_name.clear()
+            self.current_experiment.clear()
         elif row == self.current_idx:
             self.switch_dataset(max(0, row - 1))
         elif row < self.current_idx:
