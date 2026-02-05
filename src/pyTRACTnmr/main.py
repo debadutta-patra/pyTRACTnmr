@@ -1,7 +1,10 @@
 import sys
 from PySide6.QtWidgets import QApplication
 
-from window import TractApp  # type: ignore
+try:
+    from .window import TractApp
+except ImportError:
+    from window import TractApp
 
 
 def main():

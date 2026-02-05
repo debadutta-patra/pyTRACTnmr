@@ -400,7 +400,7 @@ wheels = [
 
 [[package]]
 name = "pytractnmr"
-version = "0.1.2b2"
+version = "0.1.2b4"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
@@ -410,6 +410,7 @@ dependencies = [
     { name = "pyside6-stubs" },
     { name = "scipy" },
     { name = "scipy-stubs" },
+    { name = "typing-extensions" },
 ]
 
 [package.metadata]
@@ -421,6 +422,7 @@ requires-dist = [
     { name = "pyside6-stubs", specifier = ">=6.7.3.0" },
     { name = "scipy", specifier = ">=1.17.0" },
     { name = "scipy-stubs", specifier = ">=1.17.0.2" },
+    { name = "typing-extensions", specifier = ">=4.0.0" },
 ]
 
 [[package]]

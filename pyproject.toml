@@ -1,6 +1,6 @@
 [project]
 name = "pyTRACTnmr"
-version = "0.1.2b2"
+version = "0.1.2b4"
 description = "A simple gui based application to process and analyse TRACT data from NMR spectroscopy."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -12,6 +12,7 @@ dependencies = [
     "pyside6-stubs>=6.7.3.0",
     "scipy>=1.17.0",
     "scipy-stubs>=1.17.0.2",
+    "typing-extensions>=4.0.0",
 ]
 
 [project.urls]

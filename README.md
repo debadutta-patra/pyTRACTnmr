@@ -30,7 +30,7 @@
 The fastest way to try pyTRACTnmr without installation is:
 
 ```bash
-uvx pytractnmr
+uvx pyTRACTnmr
 ```
 
 #### Using pip
