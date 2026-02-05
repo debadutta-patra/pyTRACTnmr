@@ -2,7 +2,7 @@ import os
 import numpy as np
 import nmrglue as ng  # type: ignore
 from scipy.optimize import curve_fit
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List
 import logging
 from typing_extensions import deprecated
 
@@ -57,7 +57,9 @@ class TractBruker:
             if os.path.exists(vdlist_path):
                 self.delays = self._read_delays(vdlist_path)
             else:
-                raise ValueError("No delay list found (vdlist) and no external list provided.")
+                raise ValueError(
+                    "No delay list found (vdlist) and no external list provided."
+                )
 
         self.alpha_spectra: List[np.ndarray] = []
         self.beta_spectra: List[np.ndarray] = []
@@ -250,13 +252,8 @@ class TractBruker:
         self.integrate_indices(start, end)
 
     @staticmethod
-    def _relax(x: np.ndarray[np.float64], a: float, r: float) -> np.ndarray[np.float64]:
+    def _relax(x, a, r) -> np.ndarray:
         """Internal function for exponential decay
-
-        Args:
-            x (np.ndarray): X values
-            a (float): Amplitude
-            r (float): Decay rate
 
         Returns:
             float | np.ndarray: Y values

@@ -1,6 +1,6 @@
 [project]
 name = "pyTRACTnmr"
-version = "0.1.2b1"
+version = "0.1.2b2"
 description = "A simple gui based application to process and analyse TRACT data from NMR spectroscopy."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -14,8 +14,14 @@ dependencies = [
     "scipy-stubs>=1.17.0.2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/debadutta-patra/pyTRACTnmr"
+Repository = "https://github.com/debadutta-patra/pyTRACTnmr"
+Issues = "https://github.com/debadutta-patra/pyTRACTnmr/issues"
+
+
 [project.scripts]
-pytractnmr = "pyTRACTnmr.main:main"
+pyTRACTnmr = "pyTRACTnmr.main:main"
 
 [build-system]
 requires = ["hatchling"]
