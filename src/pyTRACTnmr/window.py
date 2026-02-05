@@ -21,11 +21,13 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QMenu,
     QSlider,
+    QComboBox,
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, QPoint
 
 from matplotlib.widgets import SpanSelector
+
 try:
     from .widgets import MplCanvas, CustomNavigationToolbar
     from . import processing
@@ -41,13 +43,11 @@ class TractApp(QMainWindow):
         self.resize(1200, 800)
 
         # Data State
-        self.dic = None
-        self.data = None
-        self.proc_data = None
-        self.time_points = None
         self.datasets: List[Dict[str, Any]] = []
         self.current_idx: int = -1
         self.selector: Optional[SpanSelector] = None
+        self.baseline_nodes: List[float] = []
+        self.picking_baseline: bool = False
 
         self.init_ui()
 
@@ -70,7 +70,17 @@ class TractApp(QMainWindow):
         self.table_data = QTableWidget()
         self.table_data.setColumnCount(9)
         self.table_data.setHorizontalHeaderLabels(
-            ["Experiment", "Temperature (K)", "Delays", "Ra (Hz)", "Rb (Hz)", "Tau_C (ns)", "Err Ra", "Err Rb", "Err Tau_C"]
+            [
+                "Experiment",
+                "Temperature (K)",
+                "Delays",
+                "Ra (Hz)",
+                "Rb (Hz)",
+                "Tau_C (ns)",
+                "Err Ra",
+                "Err Rb",
+                "Err Tau_C",
+            ]
         )
         self.table_data.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
@@ -101,6 +111,7 @@ class TractApp(QMainWindow):
         # Top: Spectrum
         self.canvas_spec = MplCanvas(self)
         self.toolbar_spec = CustomNavigationToolbar(self.canvas_spec, self)
+        self.canvas_spec.mpl_connect("button_press_event", self.on_canvas_click)
         widget_spec = QWidget()
         layout_spec = QVBoxLayout()
         lbl_spec = QLabel("<b>Processed Spectrum (Phase Check)</b>")
@@ -161,6 +172,14 @@ class TractApp(QMainWindow):
         self.input_points = QLineEdit("2048")
         self.input_points.editingFinished.connect(self.process_data)
 
+        self.combo_apod = QComboBox()
+        self.combo_apod.addItems(["Sine Bell (sp)", "Exponential (em)"])
+        self.combo_apod.currentIndexChanged.connect(self.update_apod_ui)
+        self.combo_apod.currentIndexChanged.connect(self.process_data)
+
+        self.input_lb = QLineEdit("5.0")
+        self.input_lb.editingFinished.connect(self.process_data)
+
         self.input_off = QLineEdit("0.35")
         self.input_off.editingFinished.connect(self.process_data)
 
@@ -186,14 +205,30 @@ class TractApp(QMainWindow):
             self.create_slider_layout(self.slider_p1_fine, self.input_p1),
         )
         layout_t1.addRow(QLabel("<b>Apodization & ZF</b>"))
+        layout_t1.addRow("Function:", self.combo_apod)
         layout_t1.addRow("Points (ZF):", self.input_points)
+        layout_t1.addRow("Line Broadening (Hz):", self.input_lb)
         layout_t1.addRow("Sine Offset:", self.input_off)
         layout_t1.addRow("Sine End:", self.input_end)
         layout_t1.addRow("Sine Power:", self.input_pow)
         layout_t1.addRow(QLabel("<b>Integration Range</b>"))
         layout_t1.addRow("Start (ppm):", self.input_int_start)
         layout_t1.addRow("End (ppm):", self.input_int_end)
+
+        layout_t1.addRow(QLabel("<b>Baseline Correction</b>"))
+        self.btn_pick_bl = QPushButton("Pick Nodes")
+        self.btn_pick_bl.setCheckable(True)
+        self.btn_pick_bl.clicked.connect(self.toggle_picking)
+        self.btn_clear_bl = QPushButton("Clear Nodes")
+        self.btn_clear_bl.clicked.connect(self.clear_baseline)
+        layout_bl = QHBoxLayout()
+        layout_bl.addWidget(self.btn_pick_bl)
+        layout_bl.addWidget(self.btn_clear_bl)
+        layout_t1.addRow(layout_bl)
+
         tab1.setLayout(layout_t1)
+
+        self.update_apod_ui()
 
         # Tab 2: Fitting
         tab2 = QWidget()
@@ -235,6 +270,30 @@ class TractApp(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         return widget
 
+    def update_apod_ui(self) -> None:
+        is_sp = self.combo_apod.currentText().startswith("Sine")
+        layout = self.input_off.parent().layout()
+        if isinstance(layout, QFormLayout):
+            layout.setRowVisible(self.input_lb, not is_sp)
+            layout.setRowVisible(self.input_off, is_sp)
+            layout.setRowVisible(self.input_end, is_sp)
+            layout.setRowVisible(self.input_pow, is_sp)
+
+    def toggle_picking(self, checked: bool) -> None:
+        self.picking_baseline = checked
+        self.process_data()
+
+    def clear_baseline(self) -> None:
+        self.baseline_nodes = []
+        self.process_data()
+
+    def on_canvas_click(self, event) -> None:
+        if not self.picking_baseline or event.inaxes != self.canvas_spec.axes:
+            return
+        if event.button == 1 and event.xdata is not None:
+            self.baseline_nodes.append(event.xdata)
+            self.process_data()
+
     def update_phase_from_text(self) -> None:
         try:
             p0 = float(self.input_p0.text())
@@ -266,8 +325,13 @@ class TractApp(QMainWindow):
             try:
                 delay_list = None
                 if not os.path.exists(os.path.join(folder, "vdlist")):
+                    QMessageBox.information(
+                        self,
+                        "Delay List Missing",
+                        "The standard 'vdlist' file was not found. Please select a delay list file manually.",
+                    )
                     delay_list, _ = QFileDialog.getOpenFileName(
-                        self, "vdlist not found. Select delay list file:", folder
+                        self, "Select delay list file", folder
                     )
 
                 tb = processing.TractBruker(folder, delay_list=delay_list)
@@ -289,6 +353,11 @@ class TractApp(QMainWindow):
         if self.current_idx < 0:
             return
         try:
+            # Capture current zoom level
+            xlim = self.canvas_spec.axes.get_xlim()
+            ylim = self.canvas_spec.axes.get_ylim()
+            has_zoom = len(self.canvas_spec.axes.lines) > 0
+
             p0 = self.slider_p0_coarse.value() + (self.slider_p0_fine.value() / 10.0)
             p1 = self.slider_p1_coarse.value() + (self.slider_p1_fine.value() / 10.0)
 
@@ -296,6 +365,11 @@ class TractApp(QMainWindow):
             self.input_p1.setText(f"{p1:.1f}")
 
             points = int(self.input_points.text())
+            apod_func = (
+                "sp" if self.combo_apod.currentText().startswith("Sine") else "em"
+            )
+            lb = float(self.input_lb.text())
+
             off = float(self.input_off.text())
             end = float(self.input_end.text())
             pow_val = float(self.input_pow.text())
@@ -305,8 +379,24 @@ class TractApp(QMainWindow):
                 self.datasets[self.current_idx]["p1"] = p1
 
             tb = self.datasets[self.current_idx]["handler"]
+
+            nodes_idx = []
+            if self.baseline_nodes and tb.unit_converter:
+                for ppm in self.baseline_nodes:
+                    idx = tb.unit_converter(ppm, "ppm")
+                    nodes_idx.append(int(idx))
+                nodes_idx.sort()
+
             trace = tb.process_first_trace(
-                p0, p1, points=points, off=off, end=end, pow=pow_val
+                p0,
+                p1,
+                points=points,
+                apod_func=apod_func,
+                lb=lb,
+                off=off,
+                end=end,
+                pow=pow_val,
+                nodes=nodes_idx,
             )
 
             self.canvas_spec.axes.clear()
@@ -320,21 +410,35 @@ class TractApp(QMainWindow):
                 self.canvas_spec.axes.plot(trace, label="First Plane")
             self.canvas_spec.axes.legend()
 
-            self.selector = SpanSelector(
-                self.canvas_spec.axes,
-                self.on_span_select,
-                "horizontal",
-                useblit=True,
-                props=dict(alpha=0.2, facecolor="green"),
-                interactive=True,
-                drag_from_anywhere=True,
-            )
-            try:
-                s = float(self.input_int_start.text())
-                e = float(self.input_int_end.text())
-                self.selector.extents = (min(s, e), max(s, e))
-            except ValueError:
-                pass
+            for node in self.baseline_nodes:
+                self.canvas_spec.axes.axvline(
+                    x=node, color="r", linestyle="--", alpha=0.5
+                )
+
+            if has_zoom:
+                self.canvas_spec.axes.set_xlim(xlim)
+                self.canvas_spec.axes.set_ylim(ylim)
+
+            if not self.picking_baseline:
+                self.selector = SpanSelector(
+                    self.canvas_spec.axes,
+                    self.on_span_select,
+                    "horizontal",
+                    useblit=True,
+                    props=dict(alpha=0.2, facecolor="green"),
+                    interactive=True,
+                    drag_from_anywhere=True,
+                )
+            else:
+                self.selector = None
+
+            if self.selector:
+                try:
+                    s = float(self.input_int_start.text())
+                    e = float(self.input_int_end.text())
+                    self.selector.extents = (min(s, e), max(s, e))
+                except ValueError:
+                    pass
 
             self.canvas_spec.draw()
         except Exception as e:
@@ -349,6 +453,11 @@ class TractApp(QMainWindow):
             p1 = self.slider_p1_coarse.value() + (self.slider_p1_fine.value() / 10.0)
 
             points = int(self.input_points.text())
+            apod_func = (
+                "sp" if self.combo_apod.currentText().startswith("Sine") else "em"
+            )
+            lb = float(self.input_lb.text())
+
             off = float(self.input_off.text())
             end_param = float(self.input_end.text())
             pow_val = float(self.input_pow.text())
@@ -369,24 +478,52 @@ class TractApp(QMainWindow):
                 n_boot = 1000
                 self.input_bootstraps.setText("1000")
 
-            tb.split_process(p0, p1, points=points, off=off, end=end_param, pow=pow_val)
+            nodes_idx = []
+            if self.baseline_nodes and tb.unit_converter:
+                for ppm in self.baseline_nodes:
+                    idx = tb.unit_converter(ppm, "ppm")
+                    nodes_idx.append(int(idx))
+                nodes_idx.sort()
+
+            tb.split_process(
+                p0,
+                p1,
+                points=points,
+                apod_func=apod_func,
+                lb=lb,
+                off=off,
+                end=end_param,
+                pow=pow_val,
+                nodes=nodes_idx,
+            )
             tb.integrate_ppm(start_ppm, end_ppm)
             tb.calc_relaxation()
 
             b0 = float(self.input_field.text()) if self.input_field.text() else None
             tb.calc_tc(B0=b0, S2=s2_val, n_bootstrap=n_boot)
 
-            x, y_a, y_b, popt_a, popt_b = tb.get_fit_data()
+            x, y_a, y_b, popt_a, popt_b, pcov_a, pcov_b = tb.get_fit_data()
 
             self.canvas_fit.axes.clear()
             self.canvas_fit.axes.plot(x, y_a, "bo", label=r"$\alpha -spin\ state$")
             self.canvas_fit.axes.plot(x, y_b, "ro", label=r"$\beta -spin\ state$")
-            self.canvas_fit.axes.plot(
-                x, processing.TractBruker._relax(x, *popt_a), "b-"
+
+            # Smooth lines for fit and CI
+            x_smooth = np.linspace(0, np.max(x) * 1.1, 100)
+            fit_a = processing.TractBruker._relax(x_smooth, *popt_a)
+            ci_a = tb.calc_confidence_interval(x_smooth, popt_a, pcov_a)
+            fit_b = processing.TractBruker._relax(x_smooth, *popt_b)
+            ci_b = tb.calc_confidence_interval(x_smooth, popt_b, pcov_b)
+
+            self.canvas_fit.axes.plot(x_smooth, fit_a, "b-")
+            self.canvas_fit.axes.fill_between(
+                x_smooth, fit_a - ci_a, fit_a + ci_a, color="b", alpha=0.2
             )
-            self.canvas_fit.axes.plot(
-                x, processing.TractBruker._relax(x, *popt_b), "r-"
+            self.canvas_fit.axes.plot(x_smooth, fit_b, "r-")
+            self.canvas_fit.axes.fill_between(
+                x_smooth, fit_b - ci_b, fit_b + ci_b, color="r", alpha=0.2
             )
+
             self.canvas_fit.axes.set_xlabel("Delay (s)")
             self.canvas_fit.axes.set_ylabel(r"$I/I_0$")
 
@@ -409,7 +546,7 @@ class TractApp(QMainWindow):
         if not path:
             return
         try:
-            with open(path, 'w', newline='') as f:
+            with open(path, "w", newline="") as f:
                 writer = csv.writer(f)
                 headers = []
                 for col in range(self.table_data.columnCount()):
@@ -417,7 +554,12 @@ class TractApp(QMainWindow):
                     headers.append(item.text() if item else "")
                 writer.writerow(headers)
                 for row in range(self.table_data.rowCount()):
-                    row_data = [self.table_data.item(row, col).text() if self.table_data.item(row, col) else "" for col in range(self.table_data.columnCount())]
+                    row_data = [
+                        self.table_data.item(row, col).text()
+                        if self.table_data.item(row, col)
+                        else ""
+                        for col in range(self.table_data.columnCount())
+                    ]
                     writer.writerow(row_data)
         except Exception as e:
             QMessageBox.critical(self, "Export Error", str(e))
@@ -434,7 +576,7 @@ class TractApp(QMainWindow):
             # Temperature
             try:
                 temp = ds["handler"].attributes["acqus"]["TE"]
-            except (KeyError, TypeError):
+            except KeyError, TypeError:
                 temp = "N/A"
             item_temp = QTableWidgetItem(str(temp))
             item_temp.setFlags(item_temp.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -503,7 +645,7 @@ class TractApp(QMainWindow):
         # Update Field Strength from parameters
         try:
             self.input_field.setText("{:.2f}".format(tb.attributes["acqus"]["SFO1"]))
-        except (KeyError, AttributeError):
+        except KeyError, AttributeError:
             pass
 
         self.slider_p0_coarse.blockSignals(True)
@@ -526,6 +668,11 @@ class TractApp(QMainWindow):
         self.slider_p1_coarse.blockSignals(False)
         self.slider_p1_fine.blockSignals(False)
 
+        self.baseline_nodes = []
+        self.picking_baseline = False
+        self.btn_pick_bl.setChecked(False)
+
+        self.canvas_spec.axes.clear()
         self.process_data()
 
         # Update fit display
@@ -534,14 +681,23 @@ class TractApp(QMainWindow):
 
         if hasattr(tb, "Ra") and hasattr(tb, "popt_alpha"):
             try:
-                x, y_a, y_b, popt_a, popt_b = tb.get_fit_data()
+                x, y_a, y_b, popt_a, popt_b, pcov_a, pcov_b = tb.get_fit_data()
                 self.canvas_fit.axes.plot(x, y_a, "bo", label="Alpha (Anti-TROSY)")
                 self.canvas_fit.axes.plot(x, y_b, "ro", label="Beta (TROSY)")
-                self.canvas_fit.axes.plot(
-                    x, processing.TractBruker._relax(x, *popt_a), "b-"
+
+                x_smooth = np.linspace(0, np.max(x) * 1.1, 100)
+                fit_a = processing.TractBruker._relax(x_smooth, *popt_a)
+                ci_a = tb.calc_confidence_interval(x_smooth, popt_a, pcov_a)
+                fit_b = processing.TractBruker._relax(x_smooth, *popt_b)
+                ci_b = tb.calc_confidence_interval(x_smooth, popt_b, pcov_b)
+
+                self.canvas_fit.axes.plot(x_smooth, fit_a, "b-")
+                self.canvas_fit.axes.fill_between(
+                    x_smooth, fit_a - ci_a, fit_a + ci_a, color="b", alpha=0.2
                 )
-                self.canvas_fit.axes.plot(
-                    x, processing.TractBruker._relax(x, *popt_b), "r-"
+                self.canvas_fit.axes.plot(x_smooth, fit_b, "r-")
+                self.canvas_fit.axes.fill_between(
+                    x_smooth, fit_b - ci_b, fit_b + ci_b, color="r", alpha=0.2
                 )
 
                 tau_c_val = getattr(tb, "tau_c", 0.0)

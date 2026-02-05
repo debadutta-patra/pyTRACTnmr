@@ -4,6 +4,7 @@ import nmrglue as ng  # type: ignore
 from scipy.optimize import curve_fit
 from typing import Optional, Tuple, List, Dict
 import logging
+from typing_extensions import deprecated
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +26,15 @@ class TractBruker:
     CSA_BOND_ANGLE = 17 * np.pi / 180
 
     def __init__(self, exp_folder: str, delay_list: Optional[str] = None) -> None:
+        """_summary_
+
+        Args:
+            exp_folder (str): Path to the Bruker experiment folder.
+            delay_list (Optional[str], optional): Path to the delay list file. Defaults to None.
+
+        Raises:
+            ValueError: If the experiment cannot be loaded.
+        """
         logger.info(f"Initializing TractBruker with folder: {exp_folder}")
 
         try:
@@ -47,10 +57,7 @@ class TractBruker:
             if os.path.exists(vdlist_path):
                 self.delays = self._read_delays(vdlist_path)
             else:
-                logger.warning("No delay list found. Using dummy delays.")
-                # Assuming interleaved alpha/beta, so 2 FIDs per delay point
-                n_delays = self.fids.shape[1] // 2
-                self.delays = np.linspace(0.01, 1.0, n_delays)
+                raise ValueError("No delay list found (vdlist) and no external list provided.")
 
         self.alpha_spectra: List[np.ndarray] = []
         self.beta_spectra: List[np.ndarray] = []
@@ -59,24 +66,37 @@ class TractBruker:
         self.unit_converter = None
 
     def _read_delays(self, file: str) -> np.ndarray:
+        """Uitility function for reading vdlist file and converting it to numpy ndarray
+
+        Args:
+            file (str): Path to the vdlist file
+
+        Returns:
+            np.ndarray: Numpy array condaining the delays in seconds.
+        """
         with open(file, "r") as list_file:
             delays = list_file.read()
         delays = delays.replace("u", "e-6").replace("m", "e-3")
         return np.array([float(x) for x in delays.splitlines() if x.strip()])
 
-    def process_first_trace(
-        self,
-        p0: float,
-        p1: float,
-        points: int = 2048,
-        off: float = 0.35,
-        end: float = 0.98,
-        pow: float = 2.0,
+    def _get_lb_val(self, lb: float) -> float:
+        """Calculate normalized line broadening value."""
+        try:
+            sw = self.attributes["acqus"]["SW_h"]
+            return lb / sw
+        except KeyError, ZeroDivisionError:
+            return lb
+
+    def _process_single_fid(
+        self, fid, p0, p1, points, apod_func, lb_val, off, end, pow, nodes
     ) -> np.ndarray:
-        """Process first FID for interactive phase correction."""
-        fid = self.fids[0, 0]
+        """Internal helper to process a single FID."""
         # Apply apodization
-        data = ng.proc_base.sp(fid, off=off, end=end, pow=pow)
+        if apod_func == "em":
+            data = ng.proc_base.em(fid, lb=lb_val)
+        else:
+            data = ng.proc_base.sp(fid, off=off, end=end, pow=pow)
+
         # Zero filling
         data = ng.proc_base.zf_size(data, points)
         # Fourier transform
@@ -89,6 +109,42 @@ class TractBruker:
         data = ng.proc_base.di(data)
         # Reverse spectrum
         data = ng.proc_base.rev(data)
+        if nodes is not None and len(nodes) > 1:
+            data = ng.proc_bl.base(data, nodes)
+        return data
+
+    def process_first_trace(
+        self,
+        p0: float,
+        p1: float,
+        points: int = 2048,
+        apod_func: str = "sp",
+        lb: float = 0.0,
+        off: float = 0.35,
+        end: float = 0.98,
+        pow: float = 2.0,
+        nodes=None,
+    ) -> np.ndarray:
+        """Process the first plane in the Psuedo-2D experiment. This is useful for phase correction
+
+        Args:
+            p0 (float): Zeroth order phase correction
+            p1 (float): First order phase correction
+            points (int, optional): Zero filling points. Defaults to 2048.
+            apod_func (str, optional): Apodization function to use. Only "sp" and "em" are supported. Defaults to "sp".
+            lb (float, optional): Line broadening in Hz (only for em). Defaults to 0.0.
+            off (float, optional): Offset for sp apodization. Defaults to 0.35.
+            end (float, optional): End of sp apodization. Defaults to 0.98.
+            pow (float, optional): Power for sp apodization. Defaults to 2.0.
+
+        Returns:
+            np.ndarray: Fourier transformed spectrum containng only the real part.
+        """
+        fid = self.fids[0, 0]
+        lb_val = self._get_lb_val(lb) if apod_func == "em" else 0.0
+        data = self._process_single_fid(
+            fid, p0, p1, points, apod_func, lb_val, off, end, pow, nodes
+        )
 
         # Set up unit converter
         udic = ng.bruker.guess_udic(self.attributes, data)
@@ -100,30 +156,46 @@ class TractBruker:
         p0: float,
         p1: float,
         points: int = 2048,
+        apod_func: str = "sp",
+        lb: float = 0.0,
         off: float = 0.35,
         end: float = 0.98,
         pow: float = 2.0,
+        nodes=None,
     ) -> None:
-        """Process all FIDs and split into alpha/beta."""
+        """The primary function for processing the Pusedo-2D experiment. This splits the data into alpha and beta state and perform the basic processing of the raw FIDs
+
+        Args:
+            p0 (float): Zeroth order phase correction.
+            p1 (float): First order phase correction.
+            points (int, optional): Zero filling points. Defaults to 2048.
+            apod_func (str, optional): Apodization function to use. Only "sp" and "em" are supported. Defaults to "sp".
+            lb (float, optional): Line broadening in Hz (only for em). Defaults to 0.0.
+            off (float, optional): Offset for sp apodization. Defaults to 0.35.
+            end (float, optional): End of sp apodization. Defaults to 0.98.
+            pow (float, optional): Power for sp apodization. Defaults to 2.0.
+        """
         self.phc0 = p0
         self.phc1 = p1
         self.alpha_spectra = []
         self.beta_spectra = []
 
+        lb_val = self._get_lb_val(lb) if apod_func == "em" else 0.0
+
         for i in range(self.fids.shape[0]):
             for j in range(self.fids[i].shape[0]):
-                data = self.fids[i][j]
-                data = ng.proc_base.sp(data, off=off, end=end, pow=pow)
-                data = ng.proc_base.zf_size(data, points)
-                data = ng.proc_base.fft(data)
-                data = ng.bruker.remove_digital_filter(
-                    self.attributes, data, post_proc=True
+                data = self._process_single_fid(
+                    self.fids[i][j],
+                    p0,
+                    p1,
+                    points,
+                    apod_func,
+                    lb_val,
+                    off,
+                    end,
+                    pow,
+                    nodes,
                 )
-                data = ng.proc_base.ps(data, p0=p0, p1=p1)
-                data = ng.proc_base.di(data)
-                data = ng.proc_bl.baseline_corrector(data)
-                data = ng.proc_base.rev(data)
-
                 if j % 2 == 0:
                     self.beta_spectra.append(data)
                 else:
@@ -134,8 +206,18 @@ class TractBruker:
             udic = ng.bruker.guess_udic(self.attributes, self.beta_spectra[0])
             self.unit_converter = ng.fileiobase.uc_from_udic(udic)
 
+    @deprecated("Use integrate_ppm() instead")
     def integrate_indices(self, start_idx: int, end_idx: int) -> None:
-        """Integrate using point indices."""
+        """Intergrate the specified region in the spectra. This accounts for all the alpha and beta spectrum collected.
+
+        Args:
+            start_idx (int): Start index for integration.
+            end_idx (int): End index for integration.
+
+
+        Raises:
+            RuntimeError: If no spectra are available. Run split_process() first.
+        """
         if not self.alpha_spectra or not self.beta_spectra:
             raise RuntimeError("No spectra available. Run split_process() first.")
 
@@ -147,7 +229,16 @@ class TractBruker:
         )
 
     def integrate_ppm(self, start_ppm: float, end_ppm: float) -> None:
-        """Integrate using ppm range."""
+        """Integrate the specified region in all the extracted spectras.
+
+        Args:
+            start_ppm (float): Start index for integration in ppm.
+            end_ppm (float): End index for integration in ppm.
+
+        Raises:
+            RuntimeError: If no spectra are available. Run split_process() first.
+            RuntimeError: If no unit converter is available. Run split_process() first.
+        """
         if self.unit_converter is None:
             raise RuntimeError("Unit converter not initialized.")
 
@@ -159,10 +250,26 @@ class TractBruker:
         self.integrate_indices(start, end)
 
     @staticmethod
-    def _relax(x, a, r):
+    def _relax(x: np.ndarray[np.float64], a: float, r: float) -> np.ndarray[np.float64]:
+        """Internal function for exponential decay
+
+        Args:
+            x (np.ndarray): X values
+            a (float): Amplitude
+            r (float): Decay rate
+
+        Returns:
+            float | np.ndarray: Y values
+        """
         return a * np.exp(-r * x)
 
     def calc_relaxation(self) -> None:
+        """Calculate the Relaxation rates for alpha and beta states. This function does not return any values but sets
+
+        Raises:
+            RuntimeError: If no integrals are available. Run integrate_ppm() first.
+            RuntimeError: If fitting fails.
+        """
         if self.alpha_integrals is None or self.beta_integrals is None:
             raise RuntimeError("Must call integrate() before calc_relaxation()")
 
@@ -192,6 +299,19 @@ class TractBruker:
         self.err_Rb: float = np.sqrt(np.diag(self.pcov_beta))[1]
 
     def _tc_equation(self, w_N: float, c: float, S2: float = 1.0) -> float:
+        """Function for calculating the Rotational Correlation Time. The equation is are adapted from eq. 15 of:
+        'TRACT revisited: an algebraic solution for determining overall rotational correlation times from cross-correlated relaxation rates'
+        PMID: 34480265
+        doi: 10.1007/s10858-021-00379-5
+
+        Args:
+            w_N (float): Larmor Frequency of Nitrogen atom.
+            c (float): Constant derived from the relaxation rate of the alpha state and beta state.
+            S2 (float, optional): Square of the order parameter. Defaults to 1.0.
+
+        Returns:
+            float: Rotational Correlation Time in ns.
+        """
         t1 = (5 * c) / (24 * S2)
         A = 336 * (S2**2) * (w_N**2)
         B = 25 * (c**2) * (w_N**4)
@@ -209,6 +329,13 @@ class TractBruker:
     def calc_tc(
         self, B0: Optional[float] = None, S2: float = 1.0, n_bootstrap: int = 1000
     ) -> None:
+        """Calculate Rotational Correlation Time by using bootstraping. The Relaxation rates are resampled based on the error estimates derived from the covaraince matrix.
+
+        Args:
+            B0 (Optional[float], optional): Magnetic field in MHz. Defaults to None.
+            S2 (float, optional): Square of the Order parameter. Defaults to 1.0.
+            n_bootstrap (int, optional): Number of bootstrap samples. Defaults to 1000.
+        """
         if not hasattr(self, "Ra"):
             self.calc_relaxation()
         if B0 is None:
@@ -233,11 +360,49 @@ class TractBruker:
         self.tau_c = np.mean(tau_samples)
         self.err_tau_c = np.std(tau_samples)
 
+    def calc_confidence_interval(
+        self, x: np.ndarray, popt: np.ndarray, pcov: np.ndarray
+    ) -> np.ndarray:
+        """Calculate 95% confidence interval for the exponential decay."""
+        A, R = popt
+        # Gradient of f(x) = A * exp(-R * x)
+        # df/dA = exp(-R * x)
+        # df/dR = -A * x * exp(-R * x)
+        df_dA = np.exp(-R * x)
+        df_dR = -A * x * np.exp(-R * x)
+
+        J = np.stack([df_dA, df_dR], axis=1)
+
+        # sigma^2 = diag(J @ pcov @ J.T)
+        sigma2 = np.sum((J @ pcov) * J, axis=1)
+        return 1.96 * np.sqrt(sigma2)
+
     def get_fit_data(
         self,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        """Returns the fit data for alpha and beta states
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: (Delays (s), Ratios of alpha state, Ratios of beta state, optimized parameters for alpha state, optimized parameters for beta state, cov matrix alpha, cov matrix beta)
+        """
         n_pts = min(len(self.alpha_integrals), len(self.delays))
         x = self.delays[:n_pts]
         y_a = self.alpha_integrals[:n_pts] / self.alpha_integrals[0]
         y_b = self.beta_integrals[:n_pts] / self.beta_integrals[0]
-        return x, y_a, y_b, self.popt_alpha, self.popt_beta
+        return (
+            x,
+            y_a,
+            y_b,
+            self.popt_alpha,
+            self.popt_beta,
+            self.pcov_alpha,
+            self.pcov_beta,
+        )

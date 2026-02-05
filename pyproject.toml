@@ -1,6 +1,6 @@
 [project]
 name = "pyTRACTnmr"
-version = "0.1.1b1"
+version = "0.1.2b1"
 description = "A simple gui based application to process and analyse TRACT data from NMR spectroscopy."
 readme = "README.md"
 requires-python = ">=3.14"
