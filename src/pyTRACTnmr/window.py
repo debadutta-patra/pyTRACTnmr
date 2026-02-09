@@ -22,24 +22,31 @@ from PySide6.QtWidgets import (
     QMenu,
     QSlider,
     QComboBox,
+    QCheckBox,
+    QColorDialog,
 )
-from PySide6.QtGui import QAction
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtGui import QAction, QDesktopServices, QDragEnterEvent, QDropEvent, QColor
+from PySide6.QtCore import Qt, QPoint, QUrl, QThread
 
 from matplotlib.widgets import SpanSelector
 
 try:
     from .widgets import MplCanvas, CustomNavigationToolbar
     from . import processing
+    from .workers import SlidingWindowWorker
+    from . import exporters
 except ImportError:
     from widgets import MplCanvas, CustomNavigationToolbar
     import processing
+    from workers import SlidingWindowWorker
+    import exporters
 
 class TractApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TRACT Analysis GUI")
         self.resize(1200, 800)
+        self.setAcceptDrops(True)
 
         # Data State
         self.datasets: List[Dict[str, Any]] = []
@@ -47,6 +54,11 @@ class TractApp(QMainWindow):
         self.selector: Optional[SpanSelector] = None
         self.baseline_nodes: List[float] = []
         self.picking_baseline: bool = False
+
+        # Plot colors
+        self.fill_color_alpha = "blue"
+        self.fill_color_beta = "red"
+        self.fill_color_sliding = "blue"
 
         self.init_ui()
 
@@ -102,6 +114,16 @@ class TractApp(QMainWindow):
         layout1.addSpacing(10)
         layout1.addWidget(self.table_data)
         layout1.addStretch()
+
+        layout_bottom = QHBoxLayout()
+        layout_bottom.addStretch()
+        self.btn_help = QPushButton("?")
+        self.btn_help.setFixedSize(20, 20)
+        self.btn_help.setToolTip("Open GitHub Repository")
+        self.btn_help.clicked.connect(self.open_help)
+        layout_bottom.addWidget(self.btn_help)
+        layout1.addLayout(layout_bottom)
+
         panel1.setLayout(layout1)
 
         # --- Panel 2: Visualization ---
@@ -121,19 +143,41 @@ class TractApp(QMainWindow):
         widget_spec.setLayout(layout_spec)
 
         # Bottom: Fits
+        self.tabs_results = QTabWidget()
+
+        # Tab 1: Relaxation Fits
         self.canvas_fit = MplCanvas(self)
-        self.toolbar_fit = CustomNavigationToolbar(self.canvas_fit, self)
-        widget_fit = QWidget()
+        self.toolbar_fit = CustomNavigationToolbar(self.canvas_fit, self, color_callback=self.pick_fit_colors)
+        widget_fit_std = QWidget()
         layout_fit = QVBoxLayout()
-        lbl_fit = QLabel("<b>Relaxation Fits</b>")
-        lbl_fit.setFixedHeight(30)
-        layout_fit.addWidget(lbl_fit)
+        # lbl_fit = QLabel("<b>Relaxation Fits</b>")
+        # lbl_fit.setFixedHeight(30)
+        # layout_fit.addWidget(lbl_fit)
         layout_fit.addWidget(self.toolbar_fit)
         layout_fit.addWidget(self.canvas_fit)
-        widget_fit.setLayout(layout_fit)
+        widget_fit_std.setLayout(layout_fit)
+        self.tabs_results.addTab(widget_fit_std, "Relaxation Fits")
+
+        # Tab 2: Sliding Window Analysis
+        self.canvas_sliding = MplCanvas(self)
+        self.toolbar_sliding = CustomNavigationToolbar(self.canvas_sliding, self, color_callback=self.pick_sliding_colors)
+        widget_fit_slide = QWidget()
+        layout_fit_slide = QVBoxLayout()
+        layout_fit_slide.addWidget(self.toolbar_sliding)
+        layout_fit_slide.addWidget(self.canvas_sliding)
+        widget_fit_slide.setLayout(layout_fit_slide)
+        self.tabs_results.addTab(widget_fit_slide, "Sliding Window")
+
+        widget_results = QWidget()
+        layout_results = QVBoxLayout()
+        lbl_results = QLabel("<b>Analysis Results</b>")
+        lbl_results.setFixedHeight(30)
+        layout_results.addWidget(lbl_results)
+        layout_results.addWidget(self.tabs_results)
+        widget_results.setLayout(layout_results)
 
         splitter_center.addWidget(widget_spec)
-        splitter_center.addWidget(widget_fit)
+        splitter_center.addWidget(widget_results)
 
         # --- Panel 3: Controls ---
         panel3 = QTabWidget()
@@ -237,8 +281,13 @@ class TractApp(QMainWindow):
         self.input_angle = QLineEdit("17")
         self.input_s2 = QLineEdit("1.0")
         self.input_bootstraps = QLineEdit("1000")
+        self.chk_sliding = QCheckBox("Sliding Window Analysis")
         self.btn_fit = QPushButton("Calculate Tau_c")
         self.btn_fit.clicked.connect(self.run_fitting)
+        self.btn_export_fit = QPushButton("Export Relaxation Data")
+        self.btn_export_fit.clicked.connect(self.export_fit_data)
+        self.btn_export_sliding = QPushButton("Export Sliding Window Data")
+        self.btn_export_sliding.clicked.connect(self.export_sliding_data)
         self.lbl_results = QLabel("Results will appear here.")
         self.lbl_results.setWordWrap(True)
 
@@ -247,7 +296,10 @@ class TractApp(QMainWindow):
         layout_t2.addRow("CSA Angle (deg):", self.input_angle)
         layout_t2.addRow("Order Parameter (S2):", self.input_s2)
         layout_t2.addRow("Bootstraps:", self.input_bootstraps)
+        layout_t2.addRow(self.chk_sliding)
         layout_t2.addRow(self.btn_fit)
+        layout_t2.addRow(self.btn_export_fit)
+        layout_t2.addRow(self.btn_export_sliding)
         layout_t2.addRow(self.lbl_results)
         tab2.setLayout(layout_t2)
 
@@ -318,35 +370,50 @@ class TractApp(QMainWindow):
         except ValueError:
             pass
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if os.path.isdir(path):
+                self.load_experiment(path)
+
     def load_data(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select Bruker Directory")
         if folder:
-            try:
-                delay_list = None
-                if not os.path.exists(os.path.join(folder, "vdlist")):
-                    QMessageBox.information(
-                        self,
-                        "Delay List Missing",
-                        "The standard 'vdlist' file was not found. Please select a delay list file manually.",
-                    )
-                    delay_list, _ = QFileDialog.getOpenFileName(
-                        self, "Select delay list file", folder
-                    )
+            self.load_experiment(folder)
 
-                tb = processing.TractBruker(folder, delay_list=delay_list)
-                name = os.path.basename(folder)
-                dataset = {
-                    "name": name,
-                    "path": folder,
-                    "handler": tb,
-                    "p0": tb.phc0,
-                    "p1": tb.phc1,
-                }
-                self.datasets.append(dataset)
-                self.update_table()
-                self.switch_dataset(len(self.datasets) - 1)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load data: {str(e)}")
+    def load_experiment(self, folder: str) -> None:
+        try:
+            delay_list = None
+            if not os.path.exists(os.path.join(folder, "vdlist")):
+                QMessageBox.information(
+                    self,
+                    "Delay List Missing",
+                    "The standard 'vdlist' file was not found. Please select a delay list file manually.",
+                )
+                delay_list, _ = QFileDialog.getOpenFileName(
+                    self, "Select delay list file", folder
+                )
+
+            tb = processing.TractBruker(folder, delay_list=delay_list)
+            name = os.path.basename(folder)
+            dataset = {
+                "name": name,
+                "path": folder,
+                "handler": tb,
+                "p0": tb.phc0,
+                "p1": tb.phc1,
+            }
+            self.datasets.append(dataset)
+            self.update_table()
+            self.switch_dataset(len(self.datasets) - 1)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load data: {str(e)}")
 
     def process_data(self) -> None:
         if self.current_idx < 0:
@@ -397,6 +464,11 @@ class TractApp(QMainWindow):
                 pow=pow_val,
                 nodes=nodes_idx,
             )
+            
+            # Cache the processed trace
+            self.datasets[self.current_idx]["processed_trace"] = trace
+            if tb.unit_converter:
+                self.datasets[self.current_idx]["ppm_scale"] = tb.unit_converter.ppm_scale()
 
             self.canvas_spec.axes.clear()
             if tb.unit_converter:
@@ -495,10 +567,12 @@ class TractApp(QMainWindow):
                 pow=pow_val,
                 nodes=nodes_idx,
             )
+
+            b0 = float(self.input_field.text()) if self.input_field.text() else None
+
             tb.integrate_ppm(start_ppm, end_ppm)
             tb.calc_relaxation()
 
-            b0 = float(self.input_field.text()) if self.input_field.text() else None
             tb.calc_tc(B0=b0, S2=s2_val, n_bootstrap=n_boot)
 
             x, y_a, y_b, popt_a, popt_b, pcov_a, pcov_b = tb.get_fit_data()
@@ -516,11 +590,11 @@ class TractApp(QMainWindow):
 
             self.canvas_fit.axes.plot(x_smooth, fit_a, "b-")
             self.canvas_fit.axes.fill_between(
-                x_smooth, fit_a - ci_a, fit_a + ci_a, color="b", alpha=0.2
+                x_smooth, fit_a - ci_a, fit_a + ci_a, color=self.fill_color_alpha, alpha=0.2
             )
             self.canvas_fit.axes.plot(x_smooth, fit_b, "r-")
             self.canvas_fit.axes.fill_between(
-                x_smooth, fit_b - ci_b, fit_b + ci_b, color="r", alpha=0.2
+                x_smooth, fit_b - ci_b, fit_b + ci_b, color=self.fill_color_beta, alpha=0.2
             )
 
             self.canvas_fit.axes.set_xlabel("Delay (s)")
@@ -537,8 +611,55 @@ class TractApp(QMainWindow):
             self.canvas_fit.draw()
 
             self.update_table()
+
+            if self.chk_sliding.isChecked():
+                self.btn_fit.setEnabled(False)
+                self.lbl_results.setText(self.lbl_results.text() + "\nCalculating sliding window...")
+                
+                self.thread = QThread()
+                self.worker = SlidingWindowWorker(
+                    tb, start_ppm, end_ppm, b0, s2_val, n_boot, self.current_idx
+                )
+                self.worker.moveToThread(self.thread)
+                self.thread.started.connect(self.worker.run)
+                self.worker.finished.connect(self.on_sliding_finished)
+                self.worker.error.connect(self.on_sliding_error)
+                self.worker.finished.connect(self.thread.quit)
+                self.worker.finished.connect(self.worker.deleteLater)
+                self.thread.finished.connect(self.thread.deleteLater)
+                self.thread.start()
+            else:
+                self.tabs_results.setCurrentIndex(0)
+
         except Exception as e:
             QMessageBox.critical(self, "Fit Error", str(e))
+
+    def on_sliding_finished(self, ppms, taus, errs, idx):
+        self.btn_fit.setEnabled(True)
+        
+        if 0 <= idx < len(self.datasets):
+            self.datasets[idx]["sliding_results"] = (ppms, taus, errs)
+
+        if idx == self.current_idx:
+            self.canvas_sliding.axes.clear()
+            self.canvas_sliding.axes.plot(ppms, taus, "b-", label=r"$\tau_c$")
+            self.canvas_sliding.axes.fill_between(
+                ppms, taus - errs, taus + errs, color=self.fill_color_sliding, alpha=0.2
+            )
+            self.canvas_sliding.axes.set_xlabel(r"$^{1}H (ppm)$")
+            self.canvas_sliding.axes.set_ylabel(r"$\tau_c (ns)$")
+            self.canvas_sliding.axes.invert_xaxis()
+            self.canvas_sliding.axes.grid(True)
+            self.canvas_sliding.axes.legend()
+            self.canvas_sliding.draw()
+            self.tabs_results.setCurrentIndex(1)
+            
+            current_text = self.lbl_results.text().replace("\nCalculating sliding window...", "")
+            self.lbl_results.setText(current_text)
+
+    def on_sliding_error(self, msg):
+        self.btn_fit.setEnabled(True)
+        QMessageBox.critical(self, "Sliding Window Error", msg)
 
     def export_table_to_csv(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV Files (*.csv)")
@@ -575,7 +696,7 @@ class TractApp(QMainWindow):
             # Temperature
             try:
                 temp = ds["handler"].attributes["acqus"]["TE"]
-            except KeyError, TypeError:
+            except (KeyError, TypeError):
                 temp = "N/A"
             item_temp = QTableWidgetItem(str(temp))
             item_temp.setFlags(item_temp.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -635,6 +756,11 @@ class TractApp(QMainWindow):
     def switch_dataset(self, index: int) -> None:
         if index < 0 or index >= len(self.datasets):
             return
+        
+        # Save state of current dataset
+        if self.current_idx >= 0 and self.current_idx < len(self.datasets):
+            self.datasets[self.current_idx]["baseline_nodes"] = list(self.baseline_nodes)
+
         self.current_idx = index
         ds = self.datasets[index]
         tb = ds["handler"]
@@ -644,7 +770,7 @@ class TractApp(QMainWindow):
         # Update Field Strength from parameters
         try:
             self.input_field.setText("{:.2f}".format(tb.attributes["acqus"]["SFO1"]))
-        except KeyError, AttributeError:
+        except (KeyError, AttributeError):
             pass
 
         self.slider_p0_coarse.blockSignals(True)
@@ -667,12 +793,50 @@ class TractApp(QMainWindow):
         self.slider_p1_coarse.blockSignals(False)
         self.slider_p1_fine.blockSignals(False)
 
-        self.baseline_nodes = []
+        # Restore baseline nodes
+        self.baseline_nodes = ds.get("baseline_nodes", [])
         self.picking_baseline = False
         self.btn_pick_bl.setChecked(False)
 
         self.canvas_spec.axes.clear()
-        self.process_data()
+        
+        # Use cached trace if available to avoid reprocessing
+        if "processed_trace" in ds:
+            trace = ds["processed_trace"]
+            ppm_scale = ds.get("ppm_scale")
+            
+            if ppm_scale is not None:
+                self.canvas_spec.axes.plot(ppm_scale, trace, label="First Plane")
+                self.canvas_spec.axes.invert_xaxis()
+                self.canvas_spec.axes.set_xlabel(r"$^{1}H (ppm)$")
+                self.canvas_spec.axes.set_ylabel("Intensity")
+            else:
+                self.canvas_spec.axes.plot(trace, label="First Plane")
+            self.canvas_spec.axes.legend()
+
+            for node in self.baseline_nodes:
+                self.canvas_spec.axes.axvline(
+                    x=node, color="r", linestyle="--", alpha=0.5
+                )
+            
+            self.selector = SpanSelector(
+                self.canvas_spec.axes,
+                self.on_span_select,
+                "horizontal",
+                useblit=True,
+                props=dict(alpha=0.2, facecolor="green"),
+                interactive=True,
+                drag_from_anywhere=True,
+            )
+            try:
+                s = float(self.input_int_start.text())
+                e = float(self.input_int_end.text())
+                self.selector.extents = (min(s, e), max(s, e))
+            except ValueError:
+                pass
+            self.canvas_spec.draw()
+        else:
+            self.process_data()
 
         # Update fit display
         self.canvas_fit.axes.clear()
@@ -692,11 +856,11 @@ class TractApp(QMainWindow):
 
                 self.canvas_fit.axes.plot(x_smooth, fit_a, "b-")
                 self.canvas_fit.axes.fill_between(
-                    x_smooth, fit_a - ci_a, fit_a + ci_a, color="b", alpha=0.2
+                    x_smooth, fit_a - ci_a, fit_a + ci_a, color=self.fill_color_alpha, alpha=0.2
                 )
                 self.canvas_fit.axes.plot(x_smooth, fit_b, "r-")
                 self.canvas_fit.axes.fill_between(
-                    x_smooth, fit_b - ci_b, fit_b + ci_b, color="r", alpha=0.2
+                    x_smooth, fit_b - ci_b, fit_b + ci_b, color=self.fill_color_beta, alpha=0.2
                 )
 
                 tau_c_val = getattr(tb, "tau_c", 0.0)
@@ -712,6 +876,20 @@ class TractApp(QMainWindow):
                 pass
 
         self.canvas_fit.draw()
+
+        self.canvas_sliding.axes.clear()
+        if "sliding_results" in ds:
+            ppms, taus, errs = ds["sliding_results"]
+            self.canvas_sliding.axes.plot(ppms, taus, "b-", label=r"$\tau_c$")
+            self.canvas_sliding.axes.fill_between(
+                ppms, taus - errs, taus + errs, color=self.fill_color_sliding, alpha=0.2, label=r"$\sigma$"
+            )
+            self.canvas_sliding.axes.set_xlabel(r"$^{1}H (ppm)$")
+            self.canvas_sliding.axes.set_ylabel(r"$\tau_c (ns)$")
+            self.canvas_sliding.axes.invert_xaxis()
+            self.canvas_sliding.axes.grid(True)
+            self.canvas_sliding.axes.legend()
+        self.canvas_sliding.draw()
 
     def update_sample_name(self) -> None:
         if self.current_idx >= 0:
@@ -772,8 +950,11 @@ class TractApp(QMainWindow):
             self.canvas_spec.draw()
             self.canvas_fit.axes.clear()
             self.canvas_fit.draw()
+            self.canvas_sliding.axes.clear()
+            self.canvas_sliding.draw()
             self.current_experiment.clear()
         elif row == self.current_idx:
+            self.current_idx = -1  # Prevent saving state to wrong index
             self.switch_dataset(max(0, row - 1))
         elif row < self.current_idx:
             self.current_idx -= 1
@@ -781,3 +962,139 @@ class TractApp(QMainWindow):
     def on_span_select(self, vmin: float, vmax: float) -> None:
         self.input_int_start.setText(f"{vmax:.3f}")
         self.input_int_end.setText(f"{vmin:.3f}")
+
+    def open_help(self) -> None:
+        QDesktopServices.openUrl(QUrl("https://github.com/debadutta-patra/pyTRACTnmr"))
+
+    def update_fill_colors(self, alpha_color: Optional[str] = None, beta_color: Optional[str] = None, sliding_color: Optional[str] = None) -> None:
+        """Update the colors used for fill_between plots."""
+        if alpha_color:
+            self.fill_color_alpha = alpha_color
+        if beta_color:
+            self.fill_color_beta = beta_color
+        if sliding_color:
+            self.fill_color_sliding = sliding_color
+        
+        if self.current_idx >= 0:
+            self.switch_dataset(self.current_idx)
+
+    def pick_fit_colors(self) -> None:
+        c = QColorDialog.getColor(QColor(self.fill_color_alpha), self, "Select Alpha Fill Color")
+        if c.isValid():
+            self.fill_color_alpha = c.name()
+        
+        c = QColorDialog.getColor(QColor(self.fill_color_beta), self, "Select Beta Fill Color")
+        if c.isValid():
+            self.fill_color_beta = c.name()
+        self.update_fill_colors()
+
+    def pick_sliding_colors(self) -> None:
+        c = QColorDialog.getColor(QColor(self.fill_color_sliding), self, "Select Sliding Window Fill Color")
+        if c.isValid():
+            self.fill_color_sliding = c.name()
+        self.update_fill_colors()
+
+    def export_fit_data(self) -> None:
+        if self.current_idx < 0:
+            return
+        
+        path, _ = QFileDialog.getSaveFileName(self, "Export Fit Data", "", "All Files (*)")
+        if not path:
+            return
+
+        base_path = os.path.splitext(path)[0]
+        csv_path = base_path + ".csv"
+        py_path = base_path + ".py"
+
+        try:
+            tb = self.datasets[self.current_idx]["handler"]
+            if not hasattr(tb, "popt_alpha"):
+                 QMessageBox.warning(self, "No Data", "No fit data available. Run fitting first.")
+                 return
+
+            x, y_a, y_b, popt_a, popt_b, pcov_a, pcov_b = tb.get_fit_data()
+            
+            # Generate smooth data for plotting
+            x_smooth = np.linspace(0, np.max(x) * 1.1, 100)
+            fit_a = processing.TractBruker._relax(x_smooth, *popt_a)
+            ci_a = tb.calc_confidence_interval(x_smooth, popt_a, pcov_a)
+            fit_b = processing.TractBruker._relax(x_smooth, *popt_b)
+            ci_b = tb.calc_confidence_interval(x_smooth, popt_b, pcov_b)
+
+            # Save CSV
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["# Experiment", self.datasets[self.current_idx]['name']])
+                writer.writerow(["# Ra (Hz)", f"{getattr(tb, 'Ra', 'N/A')}"])
+                writer.writerow(["# Rb (Hz)", f"{getattr(tb, 'Rb', 'N/A')}"])
+                writer.writerow(["# Tau_c (ns)", f"{getattr(tb, 'tau_c', 'N/A')}"])
+                writer.writerow([])
+                writer.writerow(["Delay (s)", "Alpha Intensity", "Beta Intensity", "", "Smooth Delay (s)", "Alpha Fit", "Alpha CI", "Beta Fit", "Beta CI"])
+                
+                n_raw = len(x)
+                n_smooth = len(x_smooth)
+                for i in range(max(n_raw, n_smooth)):
+                    row = []
+                    if i < n_raw:
+                        row.extend([x[i], y_a[i], y_b[i]])
+                    else:
+                        row.extend(["", "", ""])
+                    
+                    row.append("") # Spacer
+                    
+                    if i < n_smooth:
+                        row.extend([x_smooth[i], fit_a[i], ci_a[i], fit_b[i], ci_b[i]])
+                    else:
+                        row.extend(["", "", "", "", ""])
+                    writer.writerow(row)
+
+            # Save Python Script
+            csv_filename = os.path.basename(csv_path)
+            with open(py_path, "w") as f:
+                script_content = exporters.generate_fit_script(csv_filename, self.fill_color_alpha, self.fill_color_beta)
+                f.write(script_content)
+                
+            QMessageBox.information(self, "Export Successful", f"Saved:\n{csv_path}\n{py_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))
+
+    def export_sliding_data(self) -> None:
+        if self.current_idx < 0:
+            return
+        
+        ds = self.datasets[self.current_idx]
+        if "sliding_results" not in ds:
+            QMessageBox.warning(self, "No Data", "No sliding window results available.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(self, "Export Sliding Window Data", "", "All Files (*)")
+        if not path:
+            return
+
+        base_path = os.path.splitext(path)[0]
+        csv_path = base_path + ".csv"
+        py_path = base_path + ".py"
+
+        try:
+            ppms, taus, errs = ds["sliding_results"]
+            
+            # Save CSV
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["# Experiment", ds['name']])
+                writer.writerow([])
+                writer.writerow(["PPM", "Tau_c (ns)", "Error (ns)"])
+                for i in range(len(ppms)):
+                    writer.writerow([ppms[i], taus[i], errs[i]])
+
+            # Save Python Script
+            csv_filename = os.path.basename(csv_path)
+            with open(py_path, "w") as f:
+                script_content = exporters.generate_sliding_script(csv_filename, self.fill_color_sliding)
+                f.write(script_content)
+
+            QMessageBox.information(self, "Export Successful", f"Saved:\n{csv_path}\n{py_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))

@@ -8,17 +8,26 @@ from PySide6.QtWidgets import (
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from typing import Optional
+from typing import Optional, Callable
 
 
 class CustomNavigationToolbar(NavigationToolbar2QT):
     def __init__(
-        self, canvas: FigureCanvasQTAgg, parent: QWidget, coordinates: bool = True
+        self,
+        canvas: FigureCanvasQTAgg,
+        parent: QWidget,
+        coordinates: bool = True,
+        color_callback: Optional[Callable[[], None]] = None,
+        export_data_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__(canvas, parent, coordinates)
         self.addSeparator()
         self.addAction("Font", self.change_font)
         self.addAction("Export", self.export_figure)
+        if color_callback:
+            self.addAction("Colors", color_callback)
+        if export_data_callback:
+            self.addAction("Export Data", export_data_callback)
 
     def export_figure(self) -> None:
         dpi, ok = QInputDialog.getInt(
