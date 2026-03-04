@@ -8,7 +8,7 @@
 
 *   **Bruker Data Import**: Directly load Bruker experiment directories.
 *   **Interactive Processing**:
-    *   Phase correction (0th and 1st order).
+    *   Phase correction.
     *   Apodization (Sine Bell, Exponential) and Zero Filling.
     *   Baseline correction with manual node picking.
 *   **Relaxation Analysis**:
@@ -27,13 +27,16 @@
 *   [uv](https://github.com/astral-sh/uv) (optional, but recommended for building).
 
 ### Installation 
-#### Quick Start with uv
+#### Using uv
 The fastest way to try pyTRACTnmr without installation is:
 
 ```bash
 uvx pyTRACTnmr
 ```
-
+To install:
+```bash
+uv tool install pyTRACTnmr
+```
 #### Using pip
 
 ```bash
@@ -86,12 +89,13 @@ python -m pyTRACTnmr.main
 3.  **Fit**:
     *   Switch to the **Fitting** tab.
     *   Input experimental parameters (Field Strength, CSA, etc.).
-    *   Set the number of **Bootstraps** (e.g., 1000).
+    *   Set the number of **Bootstraps** (e.g., 10000).
     *   Click **"Calculate Tau_c"**.
     *   (Optional) Check the sliding window analysis to calculate $\tau_c$ across the spectral width.
 4.  **Export**:
     *   Right-click the results table to **Export Table to CSV**.
     *   Click the export options in **Fitting** tab to generate a CSV file and python script for publication-quality plotting.
+    *   A PDF report with all generated plots and processing parameters can be exported.
 
 
 ## Dependencies
