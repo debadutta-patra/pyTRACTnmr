@@ -279,15 +279,6 @@ class TractBruker:
         except KeyError, ZeroDivisionError:
             return lb
 
-    def _process_single_fid(
-        self, fid, p0, p1, points, apod_func, lb_val, off, end, pow, nodes
-    ) -> np.ndarray:
-        """Internal helper to process a single FID."""
-        data = self._process_fid_pre_phase(
-            fid, points, apod_func, lb_val, off, end, pow
-        )
-        return self._process_fid_post_phase(data, p0, p1, nodes)
-
     def process_first_trace(
         self,
         p0: float,

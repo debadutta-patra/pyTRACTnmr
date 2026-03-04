@@ -89,7 +89,11 @@ class MplCanvas(FigureCanvasQTAgg):
         width: float = 5,
         height: float = 4,
         dpi: int = 100,
+        is_3d: bool = False,
     ) -> None:
         self.fig = Figure(figsize=(width, height), dpi=dpi)
-        self.axes = self.fig.add_subplot(111)
+        if is_3d:
+            self.axes = self.fig.add_subplot(111, projection="3d")
+        else:
+            self.axes = self.fig.add_subplot(111)
         super().__init__(self.fig)

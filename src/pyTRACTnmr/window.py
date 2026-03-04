@@ -7,17 +7,18 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QPushButton,
     QLabel,
-    QLineEdit,
     QFileDialog,
     QSplitter,
     QTabWidget,
     QMessageBox,
-    QTableWidget,
+    QFormLayout,
     QTableWidgetItem,
     QMenu,
     QColorDialog,
+    QSlider,
+    QSpinBox,
+    QDoubleSpinBox,
 )
 from PySide6.QtGui import QAction, QDesktopServices, QDragEnterEvent, QDropEvent, QColor
 from PySide6.QtCore import Qt, QPoint, QUrl, QThread
@@ -40,6 +41,7 @@ except ImportError:
     import processing
     from workers import SlidingWindowWorker
     import exporters
+
 
 class TractApp(QMainWindow):
     def __init__(self):
@@ -71,35 +73,201 @@ class TractApp(QMainWindow):
         self.panel_experiment = ExperimentPanel()
         self.panel_experiment.load_clicked.connect(self.load_data)
         self.panel_experiment.help_clicked.connect(self.open_help)
-        
+
         # Connect table signals
-        self.panel_experiment.table_data.cellDoubleClicked.connect(self.on_table_double_click)
+        self.panel_experiment.table_data.cellDoubleClicked.connect(
+            self.on_table_double_click
+        )
         self.panel_experiment.table_data.itemChanged.connect(self.on_table_item_changed)
-        self.panel_experiment.table_data.customContextMenuRequested.connect(self.show_context_menu)
+        self.panel_experiment.table_data.customContextMenuRequested.connect(
+            self.show_context_menu
+        )
 
         # --- Panel 2: Visualization ---
         splitter_center = QSplitter(Qt.Orientation.Vertical)
 
         # Top: Spectrum
+        self.tabs_spectrum = QTabWidget()
+
+        # Tab 1: Phase Check
         self.canvas_spec = MplCanvas(self)
         self.toolbar_spec = CustomNavigationToolbar(self.canvas_spec, self)
         self.canvas_spec.mpl_connect("button_press_event", self.on_canvas_click)
         self.canvas_spec.mpl_connect("scroll_event", self.on_scroll)
-        widget_spec = QWidget()
-        layout_spec = QVBoxLayout()
-        lbl_spec = QLabel("<b>Processed Spectrum (Phase Check)</b>")
-        lbl_spec.setFixedHeight(30)
-        layout_spec.addWidget(lbl_spec)
-        layout_spec.addWidget(self.toolbar_spec)
-        layout_spec.addWidget(self.canvas_spec)
-        widget_spec.setLayout(layout_spec)
+
+        widget_phase = QWidget()
+        layout_phase = QVBoxLayout()
+        layout_phase.addWidget(self.toolbar_spec)
+        layout_phase.addWidget(self.canvas_spec)
+        widget_phase.setLayout(layout_phase)
+        self.tabs_spectrum.addTab(widget_phase, "Phase Check")
+
+        # Tab 2: Alpha Stack
+        self.canvas_alpha = MplCanvas(self, is_3d=True)
+        self.toolbar_alpha = CustomNavigationToolbar(self.canvas_alpha, self)
+        self.canvas_alpha.mpl_connect("scroll_event", self.on_scroll)
+        widget_alpha = QWidget()
+        layout_alpha = QVBoxLayout()
+        layout_alpha.addWidget(self.toolbar_alpha)
+        layout_alpha.addWidget(self.canvas_alpha)
+
+        def create_control_row(slider, spin):
+            w = QWidget()
+            layout = QHBoxLayout(w)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(slider)
+            layout.addWidget(spin)
+            return w
+
+        controls_alpha = QWidget()
+        layout_controls_alpha = QFormLayout(controls_alpha)
+        self.slider_elev_alpha = QSlider(Qt.Orientation.Horizontal)
+        self.spin_elev_alpha = QSpinBox()
+        self.slider_elev_alpha.setRange(0, 90)
+        self.spin_elev_alpha.setRange(0, 90)
+        self.slider_elev_alpha.setValue(30)
+        self.spin_elev_alpha.setValue(30)
+        self.slider_elev_alpha.valueChanged.connect(self.spin_elev_alpha.setValue)
+        self.spin_elev_alpha.valueChanged.connect(self.slider_elev_alpha.setValue)
+        self.slider_elev_alpha.valueChanged.connect(self.update_view_angle)
+        self.slider_azim_alpha = QSlider(Qt.Orientation.Horizontal)
+        self.spin_azim_alpha = QSpinBox()
+        self.slider_azim_alpha.setRange(-180, 180)
+        self.spin_azim_alpha.setRange(-180, 180)
+        self.slider_azim_alpha.setValue(-60)
+        self.spin_azim_alpha.setValue(-60)
+        self.slider_azim_alpha.valueChanged.connect(self.spin_azim_alpha.setValue)
+        self.spin_azim_alpha.valueChanged.connect(self.slider_azim_alpha.setValue)
+        self.slider_azim_alpha.valueChanged.connect(self.update_view_angle)
+        layout_controls_alpha.addRow(
+            "Elevation:",
+            create_control_row(self.slider_elev_alpha, self.spin_elev_alpha),
+        )
+        layout_controls_alpha.addRow(
+            "Azimuth:", create_control_row(self.slider_azim_alpha, self.spin_azim_alpha)
+        )
+
+        self.slider_roll_alpha = QSlider(Qt.Orientation.Horizontal)
+        self.spin_roll_alpha = QSpinBox()
+        self.slider_roll_alpha.setRange(-180, 180)
+        self.spin_roll_alpha.setRange(-180, 180)
+        self.slider_roll_alpha.setValue(0)
+        self.spin_roll_alpha.setValue(0)
+        self.slider_roll_alpha.valueChanged.connect(self.spin_roll_alpha.setValue)
+        self.spin_roll_alpha.valueChanged.connect(self.slider_roll_alpha.setValue)
+        self.slider_roll_alpha.valueChanged.connect(self.update_view_angle)
+        layout_controls_alpha.addRow(
+            "Roll:", create_control_row(self.slider_roll_alpha, self.spin_roll_alpha)
+        )
+
+        self.spin_xlim_min_alpha = QDoubleSpinBox()
+        self.spin_xlim_min_alpha.setRange(-100, 100)
+        self.spin_xlim_min_alpha.setValue(5.5)
+        self.spin_xlim_min_alpha.setDecimals(2)
+        self.spin_xlim_min_alpha.setSingleStep(0.1)
+        self.spin_xlim_min_alpha.valueChanged.connect(self.plot_stacked_spectra)
+        self.spin_xlim_max_alpha = QDoubleSpinBox()
+        self.spin_xlim_max_alpha.setRange(-100, 100)
+        self.spin_xlim_max_alpha.setValue(11.0)
+        self.spin_xlim_max_alpha.setDecimals(2)
+        self.spin_xlim_max_alpha.setSingleStep(0.1)
+        self.spin_xlim_max_alpha.valueChanged.connect(self.plot_stacked_spectra)
+        xlim_alpha_widget = QWidget()
+        xlim_alpha_layout = QHBoxLayout(xlim_alpha_widget)
+        xlim_alpha_layout.setContentsMargins(0, 0, 0, 0)
+        xlim_alpha_layout.addWidget(self.spin_xlim_min_alpha)
+        xlim_alpha_layout.addWidget(QLabel("to"))
+        xlim_alpha_layout.addWidget(self.spin_xlim_max_alpha)
+        layout_controls_alpha.addRow("X-Limit (ppm):", xlim_alpha_widget)
+        layout_alpha.addWidget(controls_alpha)
+
+        widget_alpha.setLayout(layout_alpha)
+        self.tabs_spectrum.addTab(widget_alpha, "Alpha Stack")
+
+        # Tab 3: Beta Stack
+        self.canvas_beta = MplCanvas(self, is_3d=True)
+        self.toolbar_beta = CustomNavigationToolbar(self.canvas_beta, self)
+        self.canvas_beta.mpl_connect("scroll_event", self.on_scroll)
+        widget_beta = QWidget()
+        layout_beta = QVBoxLayout()
+        layout_beta.addWidget(self.toolbar_beta)
+        layout_beta.addWidget(self.canvas_beta)
+
+        controls_beta = QWidget()
+        layout_controls_beta = QFormLayout(controls_beta)
+        self.slider_elev_beta = QSlider(Qt.Orientation.Horizontal)
+        self.spin_elev_beta = QSpinBox()
+        self.slider_elev_beta.setRange(0, 90)
+        self.spin_elev_beta.setRange(0, 90)
+        self.slider_elev_beta.setValue(30)
+        self.spin_elev_beta.setValue(30)
+        self.slider_elev_beta.valueChanged.connect(self.spin_elev_beta.setValue)
+        self.spin_elev_beta.valueChanged.connect(self.slider_elev_beta.setValue)
+        self.slider_elev_beta.valueChanged.connect(self.update_view_angle)
+        self.slider_azim_beta = QSlider(Qt.Orientation.Horizontal)
+        self.spin_azim_beta = QSpinBox()
+        self.slider_azim_beta.setRange(-180, 180)
+        self.spin_azim_beta.setRange(-180, 180)
+        self.slider_azim_beta.setValue(-60)
+        self.spin_azim_beta.setValue(-60)
+        self.slider_azim_beta.valueChanged.connect(self.spin_azim_beta.setValue)
+        self.spin_azim_beta.valueChanged.connect(self.slider_azim_beta.setValue)
+        self.slider_azim_beta.valueChanged.connect(self.update_view_angle)
+        layout_controls_beta.addRow(
+            "Elevation:", create_control_row(self.slider_elev_beta, self.spin_elev_beta)
+        )
+        layout_controls_beta.addRow(
+            "Azimuth:", create_control_row(self.slider_azim_beta, self.spin_azim_beta)
+        )
+
+        self.slider_roll_beta = QSlider(Qt.Orientation.Horizontal)
+        self.spin_roll_beta = QSpinBox()
+        self.slider_roll_beta.setRange(-180, 180)
+        self.spin_roll_beta.setRange(-180, 180)
+        self.slider_roll_beta.setValue(0)
+        self.spin_roll_beta.setValue(0)
+        self.slider_roll_beta.valueChanged.connect(self.spin_roll_beta.setValue)
+        self.spin_roll_beta.valueChanged.connect(self.slider_roll_beta.setValue)
+        self.slider_roll_beta.valueChanged.connect(self.update_view_angle)
+        layout_controls_beta.addRow(
+            "Roll:", create_control_row(self.slider_roll_beta, self.spin_roll_beta)
+        )
+
+        self.spin_xlim_min_beta = QDoubleSpinBox()
+        self.spin_xlim_min_beta.setRange(-100, 100)
+        self.spin_xlim_min_beta.setValue(5.5)
+        self.spin_xlim_min_beta.setDecimals(2)
+        self.spin_xlim_min_beta.setSingleStep(0.1)
+        self.spin_xlim_min_beta.valueChanged.connect(self.plot_stacked_spectra)
+        self.spin_xlim_max_beta = QDoubleSpinBox()
+        self.spin_xlim_max_beta.setRange(-100, 100)
+        self.spin_xlim_max_beta.setValue(11.0)
+        self.spin_xlim_max_beta.setDecimals(2)
+        self.spin_xlim_max_beta.setSingleStep(0.1)
+        self.spin_xlim_max_beta.valueChanged.connect(self.plot_stacked_spectra)
+        xlim_beta_widget = QWidget()
+        xlim_beta_layout = QHBoxLayout(xlim_beta_widget)
+        xlim_beta_layout.setContentsMargins(0, 0, 0, 0)
+        xlim_beta_layout.addWidget(self.spin_xlim_min_beta)
+        xlim_beta_layout.addWidget(QLabel("to"))
+        xlim_beta_layout.addWidget(self.spin_xlim_max_beta)
+        layout_controls_beta.addRow("X-Limit (ppm):", xlim_beta_widget)
+        layout_beta.addWidget(controls_beta)
+
+        widget_beta.setLayout(layout_beta)
+        self.tabs_spectrum.addTab(widget_beta, "Beta Stack")
+
+        self.tabs_spectrum.setTabEnabled(1, False)
+        self.tabs_spectrum.setTabEnabled(2, False)
 
         # Bottom: Fits
         self.tabs_results = QTabWidget()
 
         # Tab 1: Relaxation Fits
         self.canvas_fit = MplCanvas(self)
-        self.toolbar_fit = CustomNavigationToolbar(self.canvas_fit, self, color_callback=self.pick_fit_colors)
+        self.toolbar_fit = CustomNavigationToolbar(
+            self.canvas_fit, self, color_callback=self.pick_fit_colors
+        )
         widget_fit_std = QWidget()
         layout_fit = QVBoxLayout()
         # lbl_fit = QLabel("<b>Relaxation Fits</b>")
@@ -112,7 +280,9 @@ class TractApp(QMainWindow):
 
         # Tab 2: Sliding Window Analysis
         self.canvas_sliding = MplCanvas(self)
-        self.toolbar_sliding = CustomNavigationToolbar(self.canvas_sliding, self, color_callback=self.pick_sliding_colors)
+        self.toolbar_sliding = CustomNavigationToolbar(
+            self.canvas_sliding, self, color_callback=self.pick_sliding_colors
+        )
         widget_fit_slide = QWidget()
         layout_fit_slide = QVBoxLayout()
         layout_fit_slide.addWidget(self.toolbar_sliding)
@@ -128,7 +298,7 @@ class TractApp(QMainWindow):
         layout_results.addWidget(self.tabs_results)
         widget_results.setLayout(layout_results)
 
-        splitter_center.addWidget(widget_spec)
+        splitter_center.addWidget(self.tabs_spectrum)
         splitter_center.addWidget(widget_results)
 
         # --- Panel 3: Controls ---
@@ -139,8 +309,12 @@ class TractApp(QMainWindow):
         self.tab_processing.param_changed.connect(self.process_data)
         self.tab_processing.pick_nodes_toggled.connect(self.toggle_picking)
         self.tab_processing.clear_nodes_clicked.connect(self.clear_baseline)
-        self.tab_processing.input_p0.editingFinished.connect(self.update_phase_from_text)
-        self.tab_processing.input_p1.editingFinished.connect(self.update_phase_from_text)
+        self.tab_processing.input_p0.editingFinished.connect(
+            self.update_phase_from_text
+        )
+        self.tab_processing.input_p1.editingFinished.connect(
+            self.update_phase_from_text
+        )
 
         # Tab 2: Fitting
         self.tab_fitting = FittingTab()
@@ -174,11 +348,47 @@ class TractApp(QMainWindow):
             self.baseline_nodes.append(event.xdata)
             self.process_data()
 
+    def update_view_angle(self) -> None:
+        sender = self.sender()
+        if sender in [
+            self.slider_elev_alpha,
+            self.slider_azim_alpha,
+            self.slider_roll_alpha,
+        ]:
+            if hasattr(self.canvas_alpha.axes, "view_init"):
+                elev = self.slider_elev_alpha.value()
+                azim = self.slider_azim_alpha.value()
+                roll = self.slider_roll_alpha.value()
+                self.canvas_alpha.axes.view_init(elev=elev, azim=azim, roll=roll)
+                self.canvas_alpha.draw()
+        elif sender in [
+            self.slider_elev_beta,
+            self.slider_azim_beta,
+            self.slider_roll_beta,
+        ]:
+            if hasattr(self.canvas_beta.axes, "view_init"):
+                elev = self.slider_elev_beta.value()
+                azim = self.slider_azim_beta.value()
+                roll = self.slider_roll_beta.value()
+                self.canvas_beta.axes.view_init(elev=elev, azim=azim, roll=roll)
+                self.canvas_beta.draw()
+
     def on_scroll(self, event) -> None:
-        if event.inaxes != self.canvas_spec.axes:
+        ax = None
+        canvas = None
+        if event.inaxes == self.canvas_spec.axes:
+            ax = self.canvas_spec.axes
+            canvas = self.canvas_spec
+        elif event.inaxes == self.canvas_alpha.axes:
+            ax = self.canvas_alpha.axes
+            canvas = self.canvas_alpha
+        elif event.inaxes == self.canvas_beta.axes:
+            ax = self.canvas_beta.axes
+            canvas = self.canvas_beta
+
+        if ax is None or hasattr(ax, "get_zlim"):  # Ignore 3D plots
             return
 
-        ax = self.canvas_spec.axes
         ymin, ymax = ax.get_ylim()
         mouse_y = event.ydata
 
@@ -189,7 +399,7 @@ class TractApp(QMainWindow):
         new_ymax = mouse_y + (ymax - mouse_y) * factor
 
         ax.set_ylim(new_ymin, new_ymax)
-        self.canvas_spec.draw()
+        canvas.draw()
 
     def update_phase_from_text(self) -> None:
         try:
@@ -270,15 +480,21 @@ class TractApp(QMainWindow):
             ylim = self.canvas_spec.axes.get_ylim()
             has_zoom = len(self.canvas_spec.axes.lines) > 0
 
-            p0 = self.tab_processing.slider_p0_coarse.value() + (self.tab_processing.slider_p0_fine.value() / 10.0)
-            p1 = self.tab_processing.slider_p1_coarse.value() + (self.tab_processing.slider_p1_fine.value() / 10.0)
+            p0 = self.tab_processing.slider_p0_coarse.value() + (
+                self.tab_processing.slider_p0_fine.value() / 10.0
+            )
+            p1 = self.tab_processing.slider_p1_coarse.value() + (
+                self.tab_processing.slider_p1_fine.value() / 10.0
+            )
 
             self.tab_processing.input_p0.setText(f"{p0:.1f}")
             self.tab_processing.input_p1.setText(f"{p1:.1f}")
 
             points = int(self.tab_processing.input_points.text())
             apod_func = (
-                "sp" if self.tab_processing.combo_apod.currentText().startswith("Sine") else "em"
+                "sp"
+                if self.tab_processing.combo_apod.currentText().startswith("Sine")
+                else "em"
             )
             lb = float(self.tab_processing.input_lb.text())
 
@@ -310,11 +526,13 @@ class TractApp(QMainWindow):
                 pow=pow_val,
                 nodes=nodes_idx,
             )
-            
+
             # Cache the processed trace
             self.datasets[self.current_idx]["processed_trace"] = trace
             if tb.unit_converter:
-                self.datasets[self.current_idx]["ppm_scale"] = tb.unit_converter.ppm_scale()
+                self.datasets[self.current_idx]["ppm_scale"] = (
+                    tb.unit_converter.ppm_scale()
+                )
 
             self.canvas_spec.axes.clear()
             if tb.unit_converter:
@@ -366,12 +584,18 @@ class TractApp(QMainWindow):
             return
         try:
             tb = self.datasets[self.current_idx]["handler"]
-            p0 = self.tab_processing.slider_p0_coarse.value() + (self.tab_processing.slider_p0_fine.value() / 10.0)
-            p1 = self.tab_processing.slider_p1_coarse.value() + (self.tab_processing.slider_p1_fine.value() / 10.0)
+            p0 = self.tab_processing.slider_p0_coarse.value() + (
+                self.tab_processing.slider_p0_fine.value() / 10.0
+            )
+            p1 = self.tab_processing.slider_p1_coarse.value() + (
+                self.tab_processing.slider_p1_fine.value() / 10.0
+            )
 
             points = int(self.tab_processing.input_points.text())
             apod_func = (
-                "sp" if self.tab_processing.combo_apod.currentText().startswith("Sine") else "em"
+                "sp"
+                if self.tab_processing.combo_apod.currentText().startswith("Sine")
+                else "em"
             )
             lb = float(self.tab_processing.input_lb.text())
 
@@ -414,12 +638,18 @@ class TractApp(QMainWindow):
                 nodes=nodes_idx,
             )
 
-            b0 = float(self.tab_fitting.input_field.text()) if self.tab_fitting.input_field.text() else None
+            b0 = (
+                float(self.tab_fitting.input_field.text())
+                if self.tab_fitting.input_field.text()
+                else None
+            )
 
             tb.integrate_ppm(start_ppm, end_ppm)
             tb.calc_relaxation()
 
             tb.calc_tc(B0=b0, S2=s2_val, n_bootstrap=n_boot)
+
+            self.plot_stacked_spectra()
 
             x, y_a, y_b, popt_a, popt_b, pcov_a, pcov_b = tb.get_fit_data()
 
@@ -436,11 +666,19 @@ class TractApp(QMainWindow):
 
             self.canvas_fit.axes.plot(x_smooth, fit_a, "b-")
             self.canvas_fit.axes.fill_between(
-                x_smooth, fit_a - ci_a, fit_a + ci_a, color=self.fill_color_alpha, alpha=0.2
+                x_smooth,
+                fit_a - ci_a,
+                fit_a + ci_a,
+                color=self.fill_color_alpha,
+                alpha=0.2,
             )
             self.canvas_fit.axes.plot(x_smooth, fit_b, "r-")
             self.canvas_fit.axes.fill_between(
-                x_smooth, fit_b - ci_b, fit_b + ci_b, color=self.fill_color_beta, alpha=0.2
+                x_smooth,
+                fit_b - ci_b,
+                fit_b + ci_b,
+                color=self.fill_color_beta,
+                alpha=0.2,
             )
 
             self.canvas_fit.axes.set_xlabel("Delay (s)")
@@ -460,8 +698,11 @@ class TractApp(QMainWindow):
 
             if self.tab_fitting.chk_sliding.isChecked():
                 self.tab_fitting.btn_fit.setEnabled(False)
-                self.tab_fitting.lbl_results.setText(self.tab_fitting.lbl_results.text() + "\nCalculating sliding window...")
-                
+                self.tab_fitting.lbl_results.setText(
+                    self.tab_fitting.lbl_results.text()
+                    + "\nCalculating sliding window..."
+                )
+
                 self.thread = QThread()
                 self.worker = SlidingWindowWorker(
                     tb, start_ppm, end_ppm, b0, s2_val, n_boot, self.current_idx
@@ -482,7 +723,7 @@ class TractApp(QMainWindow):
 
     def on_sliding_finished(self, ppms, taus, errs, idx):
         self.tab_fitting.btn_fit.setEnabled(True)
-        
+
         if 0 <= idx < len(self.datasets):
             self.datasets[idx]["sliding_results"] = (ppms, taus, errs)
 
@@ -499,8 +740,10 @@ class TractApp(QMainWindow):
             self.canvas_sliding.axes.legend()
             self.canvas_sliding.draw()
             self.tabs_results.setCurrentIndex(1)
-            
-            current_text = self.tab_fitting.lbl_results.text().replace("\nCalculating sliding window...", "")
+
+            current_text = self.tab_fitting.lbl_results.text().replace(
+                "\nCalculating sliding window...", ""
+            )
             self.tab_fitting.lbl_results.setText(current_text)
 
     def on_sliding_error(self, msg):
@@ -542,7 +785,7 @@ class TractApp(QMainWindow):
             # Temperature
             try:
                 temp = ds["handler"].attributes["acqus"]["TE"]
-            except (KeyError, TypeError):
+            except KeyError, TypeError:
                 temp = "N/A"
             item_temp = QTableWidgetItem(str(temp))
             item_temp.setFlags(item_temp.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -602,10 +845,12 @@ class TractApp(QMainWindow):
     def switch_dataset(self, index: int) -> None:
         if index < 0 or index >= len(self.datasets):
             return
-        
+
         # Save state of current dataset
         if self.current_idx >= 0 and self.current_idx < len(self.datasets):
-            self.datasets[self.current_idx]["baseline_nodes"] = list(self.baseline_nodes)
+            self.datasets[self.current_idx]["baseline_nodes"] = list(
+                self.baseline_nodes
+            )
 
         self.current_idx = index
         ds = self.datasets[index]
@@ -615,8 +860,10 @@ class TractApp(QMainWindow):
 
         # Update Field Strength from parameters
         try:
-            self.tab_fitting.input_field.setText("{:.2f}".format(tb.attributes["acqus"]["SFO1"]))
-        except (KeyError, AttributeError):
+            self.tab_fitting.input_field.setText(
+                "{:.2f}".format(tb.attributes["acqus"]["SFO1"])
+            )
+        except KeyError, AttributeError:
             pass
 
         self.tab_processing.slider_p0_coarse.blockSignals(True)
@@ -645,12 +892,12 @@ class TractApp(QMainWindow):
         self.tab_processing.btn_pick_bl.setChecked(False)
 
         self.canvas_spec.axes.clear()
-        
+
         # Use cached trace if available to avoid reprocessing
         if "processed_trace" in ds:
             trace = ds["processed_trace"]
             ppm_scale = ds.get("ppm_scale")
-            
+
             if ppm_scale is not None:
                 self.canvas_spec.axes.plot(ppm_scale, trace, label="First Plane")
                 self.canvas_spec.axes.invert_xaxis()
@@ -664,7 +911,7 @@ class TractApp(QMainWindow):
                 self.canvas_spec.axes.axvline(
                     x=node, color="r", linestyle="--", alpha=0.5
                 )
-            
+
             self.selector = SpanSelector(
                 self.canvas_spec.axes,
                 self.on_span_select,
@@ -702,11 +949,19 @@ class TractApp(QMainWindow):
 
                 self.canvas_fit.axes.plot(x_smooth, fit_a, "b-")
                 self.canvas_fit.axes.fill_between(
-                    x_smooth, fit_a - ci_a, fit_a + ci_a, color=self.fill_color_alpha, alpha=0.2
+                    x_smooth,
+                    fit_a - ci_a,
+                    fit_a + ci_a,
+                    color=self.fill_color_alpha,
+                    alpha=0.2,
                 )
                 self.canvas_fit.axes.plot(x_smooth, fit_b, "r-")
                 self.canvas_fit.axes.fill_between(
-                    x_smooth, fit_b - ci_b, fit_b + ci_b, color=self.fill_color_beta, alpha=0.2
+                    x_smooth,
+                    fit_b - ci_b,
+                    fit_b + ci_b,
+                    color=self.fill_color_beta,
+                    alpha=0.2,
                 )
 
                 tau_c_val = getattr(tb, "tau_c", 0.0)
@@ -728,7 +983,12 @@ class TractApp(QMainWindow):
             ppms, taus, errs = ds["sliding_results"]
             self.canvas_sliding.axes.plot(ppms, taus, "b-", label=r"$\tau_c$")
             self.canvas_sliding.axes.fill_between(
-                ppms, taus - errs, taus + errs, color=self.fill_color_sliding, alpha=0.2, label=r"$\sigma$"
+                ppms,
+                taus - errs,
+                taus + errs,
+                color=self.fill_color_sliding,
+                alpha=0.2,
+                label=r"$\sigma$",
             )
             self.canvas_sliding.axes.set_xlabel(r"$^{1}H (ppm)$")
             self.canvas_sliding.axes.set_ylabel(r"$\tau_c (ns)$")
@@ -737,11 +997,7 @@ class TractApp(QMainWindow):
             self.canvas_sliding.axes.legend()
         self.canvas_sliding.draw()
 
-    def update_sample_name(self) -> None:
-        if self.current_idx >= 0:
-            name = self.panel_experiment.current_experiment.text()
-            self.datasets[self.current_idx]["name"] = name
-            self.update_table()
+        self.plot_stacked_spectra()
 
     def show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu()
@@ -798,6 +1054,10 @@ class TractApp(QMainWindow):
             self.canvas_fit.draw()
             self.canvas_sliding.axes.clear()
             self.canvas_sliding.draw()
+            self.canvas_alpha.axes.clear()
+            self.canvas_alpha.draw()
+            self.canvas_beta.axes.clear()
+            self.canvas_beta.draw()
             self.panel_experiment.current_experiment.clear()
         elif row == self.current_idx:
             self.current_idx = -1  # Prevent saving state to wrong index
@@ -812,7 +1072,12 @@ class TractApp(QMainWindow):
     def open_help(self) -> None:
         QDesktopServices.openUrl(QUrl("https://github.com/debadutta-patra/pyTRACTnmr"))
 
-    def update_fill_colors(self, alpha_color: Optional[str] = None, beta_color: Optional[str] = None, sliding_color: Optional[str] = None) -> None:
+    def update_fill_colors(
+        self,
+        alpha_color: Optional[str] = None,
+        beta_color: Optional[str] = None,
+        sliding_color: Optional[str] = None,
+    ) -> None:
         """Update the colors used for fill_between plots."""
         if alpha_color:
             self.fill_color_alpha = alpha_color
@@ -820,31 +1085,145 @@ class TractApp(QMainWindow):
             self.fill_color_beta = beta_color
         if sliding_color:
             self.fill_color_sliding = sliding_color
-        
+
         if self.current_idx >= 0:
             self.switch_dataset(self.current_idx)
 
     def pick_fit_colors(self) -> None:
-        c = QColorDialog.getColor(QColor(self.fill_color_alpha), self, "Select Alpha Fill Color")
+        c = QColorDialog.getColor(
+            QColor(self.fill_color_alpha), self, "Select Alpha Fill Color"
+        )
         if c.isValid():
             self.fill_color_alpha = c.name()
-        
-        c = QColorDialog.getColor(QColor(self.fill_color_beta), self, "Select Beta Fill Color")
+
+        c = QColorDialog.getColor(
+            QColor(self.fill_color_beta), self, "Select Beta Fill Color"
+        )
         if c.isValid():
             self.fill_color_beta = c.name()
         self.update_fill_colors()
 
     def pick_sliding_colors(self) -> None:
-        c = QColorDialog.getColor(QColor(self.fill_color_sliding), self, "Select Sliding Window Fill Color")
+        c = QColorDialog.getColor(
+            QColor(self.fill_color_sliding), self, "Select Sliding Window Fill Color"
+        )
         if c.isValid():
             self.fill_color_sliding = c.name()
         self.update_fill_colors()
 
+    def plot_stacked_spectra(self) -> None:
+        if self.current_idx < 0:
+            return
+
+        tb = self.datasets[self.current_idx]["handler"]
+
+        if not tb.alpha_spectra or not tb.beta_spectra:
+            self.tabs_spectrum.setTabEnabled(1, False)
+            self.tabs_spectrum.setTabEnabled(2, False)
+            self.canvas_alpha.axes.clear()
+            self.canvas_alpha.draw()
+            self.canvas_beta.axes.clear()
+            self.canvas_beta.draw()
+            return
+
+        self.tabs_spectrum.setTabEnabled(1, True)
+        self.tabs_spectrum.setTabEnabled(2, True)
+
+        def _plot(
+            canvas,
+            spectra,
+            delays,
+            slider_elev,
+            slider_azim,
+            slider_roll,
+            spin_min,
+            spin_max,
+        ):
+            ax = canvas.axes
+            ax.clear()
+            if not spectra:
+                canvas.draw()
+                return
+
+            ppm_scale = tb.unit_converter.ppm_scale() if tb.unit_converter else None
+            n_pts = min(len(spectra), len(delays))
+
+            cmap = plt.get_cmap("viridis")
+            norm = None
+            if n_pts > 0:
+                norm = plt.Normalize(np.min(delays[:n_pts]), np.max(delays[:n_pts]))
+
+            xlim = (spin_min.value(), spin_max.value())
+
+            for i in range(n_pts):
+                s = spectra[i]
+                y_val = delays[i]
+                x = ppm_scale if ppm_scale is not None else np.arange(len(s))
+
+                if x is not None:
+                    x_min, x_max = min(xlim), max(xlim)
+                    mask = (x >= x_min) & (x <= x_max)
+                    x_plot, s_plot = x[mask], s[mask]
+                else:
+                    x_plot, s_plot = x, s
+
+                if x_plot is None or len(x_plot) == 0:
+                    continue
+
+                ys_plot = np.full_like(s_plot, y_val)
+                color = cmap(norm(y_val)) if norm else "k"
+                ax.plot(x_plot, ys_plot, s_plot, color=color, linewidth=1)
+
+            ax.set_xlabel(r"$^{1}H\ (ppm)$")
+            ax.set_ylabel("Delay (s)")
+            ax.set_zlabel("Intensity")
+
+            if ppm_scale is not None:
+                ax.set_xlim(xlim[1], xlim[0])
+                ax.invert_xaxis()
+
+            if delays is not None and n_pts > 0:
+                relevant_delays = delays[:n_pts]
+                ax.set_ylim(max(relevant_delays) * 1.1, min(relevant_delays) * 0.9)
+
+            ax.set_zlim(bottom=0)
+            ax.get_zaxis().set_ticklabels([])
+
+            elev = slider_elev.value()
+            azim = slider_azim.value()
+            roll = slider_roll.value()
+            ax.view_init(elev=elev, azim=azim, roll=roll)
+            canvas.draw()
+
+        delays = tb.delays if tb.delays is not None else np.array([])
+        _plot(
+            self.canvas_alpha,
+            tb.alpha_spectra,
+            delays,
+            self.slider_elev_alpha,
+            self.slider_azim_alpha,
+            self.slider_roll_alpha,
+            self.spin_xlim_min_alpha,
+            self.spin_xlim_max_alpha,
+        )
+        _plot(
+            self.canvas_beta,
+            tb.beta_spectra,
+            delays,
+            self.slider_elev_beta,
+            self.slider_azim_beta,
+            self.slider_roll_beta,
+            self.spin_xlim_min_beta,
+            self.spin_xlim_max_beta,
+        )
+
     def export_fit_data(self) -> None:
         if self.current_idx < 0:
             return
-        
-        path, _ = QFileDialog.getSaveFileName(self, "Export Fit Data", "", "All Files (*)")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Fit Data", "", "All Files (*)"
+        )
         if not path:
             return
 
@@ -855,11 +1234,13 @@ class TractApp(QMainWindow):
         try:
             tb = self.datasets[self.current_idx]["handler"]
             if not hasattr(tb, "popt_alpha"):
-                 QMessageBox.warning(self, "No Data", "No fit data available. Run fitting first.")
-                 return
+                QMessageBox.warning(
+                    self, "No Data", "No fit data available. Run fitting first."
+                )
+                return
 
             x, y_a, y_b, popt_a, popt_b, pcov_a, pcov_b = tb.get_fit_data()
-            
+
             # Generate smooth data for plotting
             x_smooth = np.linspace(0, np.max(x) * 1.1, 100)
             fit_a = processing.TractBruker._relax(x_smooth, *popt_a)
@@ -870,13 +1251,27 @@ class TractApp(QMainWindow):
             # Save CSV
             with open(csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["# Experiment", self.datasets[self.current_idx]['name']])
+                writer.writerow(
+                    ["# Experiment", self.datasets[self.current_idx]["name"]]
+                )
                 writer.writerow(["# Ra (Hz)", f"{getattr(tb, 'Ra', 'N/A')}"])
                 writer.writerow(["# Rb (Hz)", f"{getattr(tb, 'Rb', 'N/A')}"])
                 writer.writerow(["# Tau_c (ns)", f"{getattr(tb, 'tau_c', 'N/A')}"])
                 writer.writerow([])
-                writer.writerow(["Delay (s)", "Alpha Intensity", "Beta Intensity", "", "Smooth Delay (s)", "Alpha Fit", "Alpha CI", "Beta Fit", "Beta CI"])
-                
+                writer.writerow(
+                    [
+                        "Delay (s)",
+                        "Alpha Intensity",
+                        "Beta Intensity",
+                        "",
+                        "Smooth Delay (s)",
+                        "Alpha Fit",
+                        "Alpha CI",
+                        "Beta Fit",
+                        "Beta CI",
+                    ]
+                )
+
                 n_raw = len(x)
                 n_smooth = len(x_smooth)
                 for i in range(max(n_raw, n_smooth)):
@@ -885,9 +1280,9 @@ class TractApp(QMainWindow):
                         row.extend([x[i], y_a[i], y_b[i]])
                     else:
                         row.extend(["", "", ""])
-                    
-                    row.append("") # Spacer
-                    
+
+                    row.append("")  # Spacer
+
                     if i < n_smooth:
                         row.extend([x_smooth[i], fit_a[i], ci_a[i], fit_b[i], ci_b[i]])
                     else:
@@ -897,10 +1292,14 @@ class TractApp(QMainWindow):
             # Save Python Script
             csv_filename = os.path.basename(csv_path)
             with open(py_path, "w") as f:
-                script_content = exporters.generate_fit_script(csv_filename, self.fill_color_alpha, self.fill_color_beta)
+                script_content = exporters.generate_fit_script(
+                    csv_filename, self.fill_color_alpha, self.fill_color_beta
+                )
                 f.write(script_content)
-                
-            QMessageBox.information(self, "Export Successful", f"Saved:\n{csv_path}\n{py_path}")
+
+            QMessageBox.information(
+                self, "Export Successful", f"Saved:\n{csv_path}\n{py_path}"
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "Export Error", str(e))
@@ -909,7 +1308,9 @@ class TractApp(QMainWindow):
         if self.current_idx < 0:
             return
 
-        path, _ = QFileDialog.getSaveFileName(self, "Export PDF Report", "", "PDF Files (*.pdf)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export PDF Report", "", "PDF Files (*.pdf)"
+        )
         if not path:
             return
 
@@ -918,12 +1319,11 @@ class TractApp(QMainWindow):
 
         try:
             ds = self.datasets[self.current_idx]
-            tb = ds["handler"]
 
             with PdfPages(path) as pdf:
                 # Page 1: Text Summary
                 fig_text = plt.figure(figsize=(8.5, 11))
-                txt = f"TRACT Analysis Report\n\n"
+                txt = "TRACT Analysis Report\n\n"
                 txt += f"Experiment: {ds['name']}\n"
                 txt += f"Path: {ds['path']}\n\n"
 
@@ -931,7 +1331,9 @@ class TractApp(QMainWindow):
                 txt += f"  P0: {ds.get('p0', 0):.2f}\n"
                 txt += f"  P1: {ds.get('p1', 0):.2f}\n"
                 txt += f"  Points: {self.tab_processing.input_points.text()}\n"
-                txt += f"  Apodization: {self.tab_processing.combo_apod.currentText()}\n"
+                txt += (
+                    f"  Apodization: {self.tab_processing.combo_apod.currentText()}\n"
+                )
                 if "Sine" in self.tab_processing.combo_apod.currentText():
                     txt += f"  Offset: {self.tab_processing.input_off.text()}\n"
                     txt += f"  End: {self.tab_processing.input_end.text()}\n"
@@ -949,16 +1351,22 @@ class TractApp(QMainWindow):
                 txt += "\nResults:\n"
                 txt += self.tab_fitting.lbl_results.text()
 
-                fig_text.text(0.1, 0.9, txt, fontsize=12, va='top', fontfamily='monospace')
+                fig_text.text(
+                    0.1, 0.9, txt, fontsize=12, va="top", fontfamily="monospace"
+                )
                 pdf.savefig(fig_text)
                 plt.close(fig_text)
 
-                pdf.savefig(self.canvas_spec.figure, bbox_inches='tight')
-                pdf.savefig(self.canvas_fit.figure, bbox_inches='tight')
+                pdf.savefig(self.canvas_spec.figure, bbox_inches="tight")
+                pdf.savefig(self.canvas_alpha.figure, bbox_inches="tight")
+                pdf.savefig(self.canvas_beta.figure, bbox_inches="tight")
+                pdf.savefig(self.canvas_fit.figure, bbox_inches="tight")
                 if "sliding_results" in ds:
-                    pdf.savefig(self.canvas_sliding.figure, bbox_inches='tight')
+                    pdf.savefig(self.canvas_sliding.figure, bbox_inches="tight")
 
-            QMessageBox.information(self, "Export Successful", f"Report saved to:\n{path}")
+            QMessageBox.information(
+                self, "Export Successful", f"Report saved to:\n{path}"
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "Export Error", str(e))
@@ -966,13 +1374,15 @@ class TractApp(QMainWindow):
     def export_sliding_data(self) -> None:
         if self.current_idx < 0:
             return
-        
+
         ds = self.datasets[self.current_idx]
         if "sliding_results" not in ds:
             QMessageBox.warning(self, "No Data", "No sliding window results available.")
             return
 
-        path, _ = QFileDialog.getSaveFileName(self, "Export Sliding Window Data", "", "All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Sliding Window Data", "", "All Files (*)"
+        )
         if not path:
             return
 
@@ -982,11 +1392,11 @@ class TractApp(QMainWindow):
 
         try:
             ppms, taus, errs = ds["sliding_results"]
-            
+
             # Save CSV
             with open(csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["# Experiment", ds['name']])
+                writer.writerow(["# Experiment", ds["name"]])
                 writer.writerow([])
                 writer.writerow(["PPM", "Tau_c (ns)", "Error (ns)"])
                 for i in range(len(ppms)):
@@ -995,10 +1405,14 @@ class TractApp(QMainWindow):
             # Save Python Script
             csv_filename = os.path.basename(csv_path)
             with open(py_path, "w") as f:
-                script_content = exporters.generate_sliding_script(csv_filename, self.fill_color_sliding)
+                script_content = exporters.generate_sliding_script(
+                    csv_filename, self.fill_color_sliding
+                )
                 f.write(script_content)
 
-            QMessageBox.information(self, "Export Successful", f"Saved:\n{csv_path}\n{py_path}")
+            QMessageBox.information(
+                self, "Export Successful", f"Saved:\n{csv_path}\n{py_path}"
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "Export Error", str(e))
