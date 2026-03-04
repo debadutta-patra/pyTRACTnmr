@@ -6,10 +6,194 @@ from typing import Optional, Tuple, List, Union, Dict, Any
 import logging
 import warnings
 from typing_extensions import deprecated
+import concurrent.futures
+import multiprocessing
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _relax_func(x, a, r):
+    return a * np.exp(-r * x)
+
+
+def _relax_jac_func(x, a, r):
+    e = np.exp(-r * x)
+    da = e
+    dr = -a * x * e
+    return np.stack([da, dr], axis=1)
+
+
+def _tc_equation_func(w_N, c, S2):
+    t1 = (5 * c) / (24 * S2)
+    A = 336 * (S2**2) * (w_N**2)
+    B = 25 * (c**2) * (w_N**4)
+    C = 125 * (c**3) * (w_N**6)
+    D = 625 * (S2**2) * (c**4) * (w_N**10)
+    E = 3025 * (S2**4) * (c**2) * (w_N**8)
+    F = 21952 * (S2**6) * (w_N**6)
+    G = 1800 * c * (w_N**4)
+    term_sqrt = np.sqrt(D - E + F)
+    term_cbrt = np.cbrt(C + 24 * np.sqrt(3) * term_sqrt + G * S2**2)
+    t2 = (A - B) / (24 * (w_N**2) * S2 * term_cbrt)
+    t3 = term_cbrt / (24 * S2 * w_N**2)
+    return t1 - t2 + t3
+
+
+def _process_chunk(
+    start_idx,
+    end_idx,
+    window_width,
+    alpha_cum,
+    beta_cum,
+    delays,
+    n_pts,
+    w_N,
+    c_factor,
+    S2,
+    n_bootstrap,
+):
+    center_idxs = []
+    taus = []
+    errs = []
+
+    curr_p0_alpha = [1.0, 5.0]
+    curr_p0_beta = [1.0, 5.0]
+
+    for i in range(start_idx, end_idx):
+        # Fast integration using cumsum
+        alpha_ints = (alpha_cum[:, i + window_width] - alpha_cum[:, i])[:n_pts]
+        beta_ints = (beta_cum[:, i + window_width] - beta_cum[:, i])[:n_pts]
+
+        if alpha_ints[0] == 0 or beta_ints[0] == 0:
+            continue
+
+        alpha_norm = alpha_ints / alpha_ints[0]
+        beta_norm = beta_ints / beta_ints[0]
+
+        Ra, Rb, err_Ra, err_Rb = 0.0, 0.0, 0.0, 0.0
+        success = False
+
+        # Attempt 1: Warm start
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=RuntimeWarning)
+            try:
+                popt_a, pcov_a = curve_fit(
+                    _relax_func,
+                    delays,
+                    alpha_norm,
+                    p0=curr_p0_alpha,
+                    jac=_relax_jac_func,
+                    maxfev=5000,
+                )
+                popt_b, pcov_b = curve_fit(
+                    _relax_func,
+                    delays,
+                    beta_norm,
+                    p0=curr_p0_beta,
+                    jac=_relax_jac_func,
+                    maxfev=5000,
+                )
+
+                curr_p0_alpha = popt_a
+                curr_p0_beta = popt_b
+
+                Ra = popt_a[1]
+                Rb = popt_b[1]
+                err_Ra = np.sqrt(np.diag(pcov_a))[1]
+                err_Rb = np.sqrt(np.diag(pcov_b))[1]
+
+                success = True
+            except Exception:
+                pass
+
+        # Attempt 2: Default guess
+        if not success:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("error", category=RuntimeWarning)
+                try:
+                    default_guess = [1.0, 5.0]
+                    popt_a, pcov_a = curve_fit(
+                        _relax_func,
+                        delays,
+                        alpha_norm,
+                        p0=default_guess,
+                        jac=_relax_jac_func,
+                        maxfev=5000,
+                    )
+                    popt_b, pcov_b = curve_fit(
+                        _relax_func,
+                        delays,
+                        beta_norm,
+                        p0=default_guess,
+                        jac=_relax_jac_func,
+                        maxfev=5000,
+                    )
+
+                    curr_p0_alpha = popt_a
+                    curr_p0_beta = popt_b
+
+                    Ra = popt_a[1]
+                    Rb = popt_b[1]
+                    err_Ra = np.sqrt(np.diag(pcov_a))[1]
+                    err_Rb = np.sqrt(np.diag(pcov_b))[1]
+
+                    success = True
+                except Exception:
+                    pass
+
+        if success:
+            Ra_samples = np.random.normal(Ra, err_Ra, n_bootstrap)
+            Rb_samples = np.random.normal(Rb, err_Rb, n_bootstrap)
+
+            c_samples = (Rb_samples - Ra_samples) * c_factor
+            c_samples = c_samples[~np.isnan(c_samples)]
+
+            if len(c_samples) > 0:
+                tau_samples = _tc_equation_func(w_N, c_samples, S2) * 1e9
+                tau_samples = tau_samples[~np.isnan(tau_samples)]
+
+                if len(tau_samples) > 0:
+                    center_idx = (i + i + window_width) / 2
+                    center_idxs.append(center_idx)
+                    taus.append(np.mean(tau_samples))
+                    errs.append(np.std(tau_samples))
+
+    return center_idxs, taus, errs
+
+
+def _process_fid_pre_phase_static(
+    fid, attributes, points, apod_func, lb_val, off, end, pow_val
+):
+    """Static helper for pre-phase processing to allow pickling."""
+    if apod_func == "em":
+        data = ng.proc_base.em(fid, lb=lb_val)
+    else:
+        data = ng.proc_base.sp(fid, off=off, end=end, pow=pow_val)
+    data = ng.proc_base.zf_size(data, points)
+    data = ng.proc_base.fft(data)
+    data = ng.bruker.remove_digital_filter(attributes, data, post_proc=True)
+    return data
+
+
+def _process_fid_post_phase_static(data, p0, p1, nodes):
+    """Static helper for post-phase processing."""
+    data = ng.proc_base.ps(data, p0=p0, p1=p1)
+    data = ng.proc_base.di(data)
+    data = ng.proc_base.rev(data)
+    if nodes is not None and len(nodes) > 1:
+        data = ng.proc_bl.base(data, nodes)
+    return data
+
+
+def _process_trace_wrapper(args):
+    """Wrapper for parallel processing of a single trace."""
+    fid, attributes, p0, p1, points, apod_func, lb_val, off, end, pow_val, nodes = args
+    data = _process_fid_pre_phase_static(
+        fid, attributes, points, apod_func, lb_val, off, end, pow_val
+    )
+    return _process_fid_post_phase_static(data, p0, p1, nodes)
 
 
 class TractBruker:
@@ -23,7 +207,7 @@ class TractBruker:
     GAMMA_1H = 267.52218744e6
     GAMMA_15N = -27.126e6
     NH_BOND_LENGTH = 1.02e-10
-    CSA_15N = 160e-6
+    CSA_15N = 172e-6
     CSA_BOND_ANGLE = 17 * np.pi / 180
 
     def __init__(self, exp_folder: str, delay_list: Optional[str] = None) -> None:
@@ -92,30 +276,8 @@ class TractBruker:
         try:
             sw = self.attributes["acqus"]["SW_h"]
             return lb / sw
-        except (KeyError, ZeroDivisionError):
+        except KeyError, ZeroDivisionError:
             return lb
-
-    def _process_fid_pre_phase(
-        self, fid, points, apod_func, lb_val, off, end, pow
-    ) -> np.ndarray:
-        """Process FID up to phase correction (Apod -> ZF -> FFT -> Digital Filter)."""
-        if apod_func == "em":
-            data = ng.proc_base.em(fid, lb=lb_val)
-        else:
-            data = ng.proc_base.sp(fid, off=off, end=end, pow=pow)
-        data = ng.proc_base.zf_size(data, points)
-        data = ng.proc_base.fft(data)
-        data = ng.bruker.remove_digital_filter(self.attributes, data, post_proc=True)
-        return data
-
-    def _process_fid_post_phase(self, data, p0, p1, nodes) -> np.ndarray:
-        """Process spectrum after FFT (Phase -> Di -> Rev -> Baseline)."""
-        data = ng.proc_base.ps(data, p0=p0, p1=p1)
-        data = ng.proc_base.di(data)
-        data = ng.proc_base.rev(data)
-        if nodes is not None and len(nodes) > 1:
-            data = ng.proc_bl.base(data, nodes)
-        return data
 
     def _process_single_fid(
         self, fid, p0, p1, points, apod_func, lb_val, off, end, pow, nodes
@@ -172,13 +334,16 @@ class TractBruker:
         ):
             data = self._cached_first_trace_data
         else:
-            data = self._process_fid_pre_phase(
-                fid, points, apod_func, lb_val, off, end, pow
+            data = _process_fid_pre_phase_static(
+                fid, self.attributes, points, apod_func, lb_val, off, end, pow
             )
             self._cached_first_trace_data = data
             self._cached_first_trace_params = current_pre_params
 
-        data = self._process_fid_post_phase(data, p0, p1, nodes)
+        # Copy data to prevent in-place modification of cached data
+        data = data.copy()
+
+        data = _process_fid_post_phase_static(data, p0, p1, nodes)
 
         # Set up unit converter
         udic = ng.bruker.guess_udic(self.attributes, data)
@@ -232,24 +397,40 @@ class TractBruker:
 
         lb_val = self._get_lb_val(lb) if apod_func == "em" else 0.0
 
+        # Prepare tasks for parallel processing
+        tasks = []
         for i in range(self.fids.shape[0]):
             for j in range(self.fids[i].shape[0]):
-                data = self._process_single_fid(
-                    self.fids[i][j],
-                    p0,
-                    p1,
-                    points,
-                    apod_func,
-                    lb_val,
-                    off,
-                    end,
-                    pow,
-                    nodes,
+                tasks.append(
+                    (
+                        self.fids[i][j],
+                        self.attributes,
+                        p0,
+                        p1,
+                        points,
+                        apod_func,
+                        lb_val,
+                        off,
+                        end,
+                        pow,
+                        nodes,
+                    )
                 )
-                if j % 2 == 0:
-                    self.beta_spectra.append(data)
-                else:
-                    self.alpha_spectra.append(data)
+
+        # Execute in parallel
+        # Using ProcessPoolExecutor because FFT and processing are CPU intensive
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            results = list(executor.map(_process_trace_wrapper, tasks))
+
+        # Distribute results
+        # The order of results corresponds to the order of tasks (i, then j)
+        for idx, data in enumerate(results):
+            # j is the inner loop index. Assuming rectangular data.
+            j = idx % self.fids.shape[1]
+            if j % 2 == 0:
+                self.beta_spectra.append(data)
+            else:
+                self.alpha_spectra.append(data)
 
         self._last_split_params = current_params
 
@@ -319,7 +500,9 @@ class TractBruker:
         return np.stack([da, dr], axis=1)
 
     def calc_relaxation(
-        self, p0_alpha: Optional[List[float]] = None, p0_beta: Optional[List[float]] = None
+        self,
+        p0_alpha: Optional[List[float]] = None,
+        p0_beta: Optional[List[float]] = None,
     ) -> None:
         """Calculate the Relaxation rates for alpha and beta states. This function does not return any values but sets
 
@@ -347,10 +530,20 @@ class TractBruker:
 
         try:
             self.popt_alpha, self.pcov_alpha = curve_fit(
-                self._relax, delays, alpha_norm, p0=p0_alpha, jac=self._relax_jac, maxfev=5000
+                self._relax,
+                delays,
+                alpha_norm,
+                p0=p0_alpha,
+                jac=self._relax_jac,
+                maxfev=5000,
             )
             self.popt_beta, self.pcov_beta = curve_fit(
-                self._relax, delays, beta_norm, p0=p0_beta, jac=self._relax_jac, maxfev=5000
+                self._relax,
+                delays,
+                beta_norm,
+                p0=p0_beta,
+                jac=self._relax_jac,
+                maxfev=5000,
             )
         except Exception as e:
             raise RuntimeError(f"Fitting failed: {e}")
@@ -360,7 +553,9 @@ class TractBruker:
         self.err_Ra: float = np.sqrt(np.diag(self.pcov_alpha))[1]
         self.err_Rb: float = np.sqrt(np.diag(self.pcov_beta))[1]
 
-    def _tc_equation(self, w_N: float, c: Union[float, np.ndarray], S2: float = 1.0) -> Union[float, np.ndarray]:
+    def _tc_equation(
+        self, w_N: float, c: Union[float, np.ndarray], S2: float = 1.0
+    ) -> Union[float, np.ndarray]:
         """Function for calculating the Rotational Correlation Time. The equation is are adapted from eq. 15 of:
         'TRACT revisited: an algebraic solution for determining overall rotational correlation times from cross-correlated relaxation rates'
         PMID: 34480265
@@ -383,7 +578,7 @@ class TractBruker:
         F = 21952 * (S2**6) * (w_N**6)
         G = 1800 * c * (w_N**4)
         term_sqrt = np.sqrt(D - E + F)
-        term_cbrt = (C + 24 * np.sqrt(3) * term_sqrt + G * S2**2) ** (1 / 3)
+        term_cbrt = np.cbrt(C + 24 * np.sqrt(3) * term_sqrt + G * S2**2)
         t2 = (A - B) / (24 * (w_N**2) * S2 * term_cbrt)
         t3 = term_cbrt / (24 * S2 * w_N**2)
         return t1 - t2 + t3
@@ -454,17 +649,13 @@ class TractBruker:
         alpha_cum = np.pad(np.cumsum(alpha_mat, axis=1), ((0, 0), (1, 0)))
         beta_cum = np.pad(np.cumsum(beta_mat, axis=1), ((0, 0), (1, 0)))
 
-        ppms = []
-        taus = []
-        errs = []
-        
         # Pre-calculate constants for fitting and Tc calculation
         n_pts = min(len(self.alpha_spectra), len(self.delays))
         delays = self.delays[:n_pts]
-        
+
         if B0 is None:
             B0 = self.attributes["acqus"]["SFO1"]
-        
+
         # Physics constants pre-calculation
         B_0 = B0 * 1e6 * 2 * np.pi / self.GAMMA_1H
         p = (
@@ -472,106 +663,60 @@ class TractBruker:
         ) / (16 * np.pi**2 * np.sqrt(2) * self.NH_BOND_LENGTH**3)
         dN = self.GAMMA_15N * B_0 * self.CSA_15N / (3 * np.sqrt(2))
         w_N = B_0 * self.GAMMA_15N
-        
+
         # Factor for c calculation: c = (Rb - Ra) / denominator
         c_factor = 1.0 / (2 * dN * p * (3 * np.cos(self.CSA_BOND_ANGLE) ** 2 - 1))
-        
-        # Initialize warm start parameters
-        curr_p0_alpha = [1.0, 5.0]
-        curr_p0_beta = [1.0, 5.0]
 
-        if window_width < (end_idx - start_idx):
-            for i in range(start_idx, end_idx - window_width + 1):
-                # Fast integration using cumsum
-                alpha_ints = (alpha_cum[:, i + window_width] - alpha_cum[:, i])[:n_pts]
-                beta_ints = (beta_cum[:, i + window_width] - beta_cum[:, i])[:n_pts]
-                
-                if alpha_ints[0] == 0 or beta_ints[0] == 0:
-                    continue
+        total_iterations = end_idx - window_width + 1 - start_idx
+        if total_iterations <= 0:
+            return np.array([]), np.array([]), np.array([])
 
-                alpha_norm = alpha_ints / alpha_ints[0]
-                beta_norm = beta_ints / beta_ints[0]
-                
-                Ra, Rb, err_Ra, err_Rb = 0.0, 0.0, 0.0, 0.0
-                success = False
+        num_workers = multiprocessing.cpu_count()
+        chunk_size = max(1, total_iterations // num_workers)
+        futures = []
 
-                # Attempt 1: Warm start
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("error", category=RuntimeWarning)
-                    try:
-                        popt_a, pcov_a = curve_fit(
-                            self._relax, delays, alpha_norm, p0=curr_p0_alpha, jac=self._relax_jac, maxfev=5000
-                        )
-                        popt_b, pcov_b = curve_fit(
-                            self._relax, delays, beta_norm, p0=curr_p0_beta, jac=self._relax_jac, maxfev=5000
-                        )
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_workers
+        ) as executor:
+            for i in range(0, total_iterations, chunk_size):
+                chunk_start = start_idx + i
+                chunk_end = min(start_idx + total_iterations, chunk_start + chunk_size)
 
-                        # Update parameters for next iteration
-                        curr_p0_alpha = popt_a
-                        curr_p0_beta = popt_b
-                        
-                        Ra = popt_a[1]
-                        Rb = popt_b[1]
-                        err_Ra = np.sqrt(np.diag(pcov_a))[1]
-                        err_Rb = np.sqrt(np.diag(pcov_b))[1]
-                        
-                        success = True
-                    except Exception:
-                        pass
+                futures.append(
+                    executor.submit(
+                        _process_chunk,
+                        chunk_start,
+                        chunk_end,
+                        window_width,
+                        alpha_cum,
+                        beta_cum,
+                        delays,
+                        n_pts,
+                        w_N,
+                        c_factor,
+                        S2,
+                        n_bootstrap,
+                    )
+                )
 
-                # Attempt 2: Default guess
-                if not success:
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("error", category=RuntimeWarning)
-                        try:
-                            default_guess = [1.0, 5.0]
-                            popt_a, pcov_a = curve_fit(
-                                self._relax, delays, alpha_norm, p0=default_guess, jac=self._relax_jac, maxfev=5000
-                            )
-                            popt_b, pcov_b = curve_fit(
-                                self._relax, delays, beta_norm, p0=default_guess, jac=self._relax_jac, maxfev=5000
-                            )
+        all_center_idxs = []
+        all_taus = []
+        all_errs = []
 
-                            # Update parameters for next iteration
-                            curr_p0_alpha = popt_a
-                            curr_p0_beta = popt_b
-                            
-                            Ra = popt_a[1]
-                            Rb = popt_b[1]
-                            err_Ra = np.sqrt(np.diag(pcov_a))[1]
-                            err_Rb = np.sqrt(np.diag(pcov_b))[1]
-                            
-                            success = True
-                        except Exception:
-                            pass
+        for future in futures:
+            c_idxs, t, e = future.result()
+            all_center_idxs.extend(c_idxs)
+            all_taus.extend(t)
+            all_errs.extend(e)
 
-                if success:
-                    # Inline calc_tc logic
-                    Ra_samples = np.random.normal(Ra, err_Ra, n_bootstrap)
-                    Rb_samples = np.random.normal(Rb, err_Rb, n_bootstrap)
-                    
-                    # Use precomputed factor
-                    c_samples = (Rb_samples - Ra_samples) * c_factor
-                    
-                    # Filter NaNs
-                    c_samples = c_samples[~np.isnan(c_samples)]
-                    
-                    if len(c_samples) > 0:
-                        tau_samples = self._tc_equation(w_N, c_samples, S2) * 1e9
-                        tau_samples = tau_samples[~np.isnan(tau_samples)]
-                        
-                        if len(tau_samples) > 0:
-                            center_idx = (i + i + window_width) / 2
-                            ppms.append(self.unit_converter.ppm(center_idx))
-                            taus.append(np.mean(tau_samples))
-                            errs.append(np.std(tau_samples))
+        ppms = [self.unit_converter.ppm(idx) for idx in all_center_idxs]
 
         if saved_alpha is not None:
             self.alpha_integrals = saved_alpha
         if saved_beta is not None:
             self.beta_integrals = saved_beta
 
-        return np.array(ppms), np.array(taus), np.array(errs)
+        return np.array(ppms), np.array(all_taus), np.array(all_errs)
 
     def calc_confidence_interval(
         self, x: np.ndarray, popt: np.ndarray, pcov: np.ndarray

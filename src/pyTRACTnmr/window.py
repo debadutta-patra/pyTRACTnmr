@@ -13,30 +13,30 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QSplitter,
     QTabWidget,
-    QFormLayout,
-    QGroupBox,
     QMessageBox,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
     QMenu,
-    QSlider,
-    QComboBox,
-    QCheckBox,
     QColorDialog,
 )
 from PySide6.QtGui import QAction, QDesktopServices, QDragEnterEvent, QDropEvent, QColor
 from PySide6.QtCore import Qt, QPoint, QUrl, QThread
 
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.widgets import SpanSelector
 
 try:
     from .widgets import MplCanvas, CustomNavigationToolbar
+    from .data_panel import ExperimentPanel
+    from .analysis_panel import ProcessingTab, FittingTab
     from . import processing
     from .workers import SlidingWindowWorker
     from . import exporters
 except ImportError:
     from widgets import MplCanvas, CustomNavigationToolbar
+    from data_panel import ExperimentPanel
+    from analysis_panel import ProcessingTab, FittingTab
     import processing
     from workers import SlidingWindowWorker
     import exporters
@@ -68,63 +68,14 @@ class TractApp(QMainWindow):
         main_layout = QHBoxLayout(main_widget)
 
         # --- Panel 1: Data Loading ---
-        panel1 = QGroupBox("Experiment Info")
-        layout1 = QVBoxLayout()
-
-        self.btn_load = QPushButton("Load Bruker Directory")
-        self.btn_load.clicked.connect(self.load_data)
-
-        self.current_experiment = QLineEdit()
-        self.current_experiment.setPlaceholderText("Current Experiment")
-        self.current_experiment.setReadOnly(True)
-
-        self.table_data = QTableWidget()
-        self.table_data.setColumnCount(9)
-        self.table_data.setHorizontalHeaderLabels(
-            [
-                "Experiment",
-                "Temperature (K)",
-                "Delays",
-                "Ra (Hz)",
-                "Rb (Hz)",
-                "Tau_C (ns)",
-                "Err Ra",
-                "Err Rb",
-                "Err Tau_C",
-            ]
-        )
-        self.table_data.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self.table_data.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table_data.setEditTriggers(
-            QTableWidget.EditTrigger.DoubleClicked
-            | QTableWidget.EditTrigger.EditKeyPressed
-        )
-        self.table_data.cellDoubleClicked.connect(self.on_table_double_click)
-        self.table_data.itemChanged.connect(self.on_table_item_changed)
-        self.table_data.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table_data.customContextMenuRequested.connect(self.show_context_menu)
-
-        layout1.addWidget(QLabel("Load Data:"))
-        layout1.addWidget(self.btn_load)
-        layout1.addSpacing(10)
-        layout1.addWidget(QLabel("Current Experiment:"))
-        layout1.addWidget(self.current_experiment)
-        layout1.addSpacing(10)
-        layout1.addWidget(self.table_data)
-        layout1.addStretch()
-
-        layout_bottom = QHBoxLayout()
-        layout_bottom.addStretch()
-        self.btn_help = QPushButton("?")
-        self.btn_help.setFixedSize(20, 20)
-        self.btn_help.setToolTip("Open GitHub Repository")
-        self.btn_help.clicked.connect(self.open_help)
-        layout_bottom.addWidget(self.btn_help)
-        layout1.addLayout(layout_bottom)
-
-        panel1.setLayout(layout1)
+        self.panel_experiment = ExperimentPanel()
+        self.panel_experiment.load_clicked.connect(self.load_data)
+        self.panel_experiment.help_clicked.connect(self.open_help)
+        
+        # Connect table signals
+        self.panel_experiment.table_data.cellDoubleClicked.connect(self.on_table_double_click)
+        self.panel_experiment.table_data.itemChanged.connect(self.on_table_item_changed)
+        self.panel_experiment.table_data.customContextMenuRequested.connect(self.show_context_menu)
 
         # --- Panel 2: Visualization ---
         splitter_center = QSplitter(Qt.Orientation.Vertical)
@@ -133,6 +84,7 @@ class TractApp(QMainWindow):
         self.canvas_spec = MplCanvas(self)
         self.toolbar_spec = CustomNavigationToolbar(self.canvas_spec, self)
         self.canvas_spec.mpl_connect("button_press_event", self.on_canvas_click)
+        self.canvas_spec.mpl_connect("scroll_event", self.on_scroll)
         widget_spec = QWidget()
         layout_spec = QVBoxLayout()
         lbl_spec = QLabel("<b>Processed Spectrum (Phase Check)</b>")
@@ -183,152 +135,29 @@ class TractApp(QMainWindow):
         panel3 = QTabWidget()
 
         # Tab 1: Processing
-        tab1 = QWidget()
-        layout_t1 = QFormLayout()
-
-        self.slider_p0_coarse = QSlider(Qt.Orientation.Horizontal)
-        self.slider_p0_coarse.setRange(-180, 180)
-        self.slider_p0_coarse.setValue(0)
-        self.slider_p0_coarse.valueChanged.connect(self.process_data)
-
-        self.slider_p0_fine = QSlider(Qt.Orientation.Horizontal)
-        self.slider_p0_fine.setRange(-50, 50)
-        self.slider_p0_fine.setValue(0)
-        self.slider_p0_fine.valueChanged.connect(self.process_data)
-        self.input_p0 = QLineEdit("0.0")
-        self.input_p0.setFixedWidth(50)
-        self.input_p0.editingFinished.connect(self.update_phase_from_text)
-
-        self.slider_p1_coarse = QSlider(Qt.Orientation.Horizontal)
-        self.slider_p1_coarse.setRange(-360, 360)
-        self.slider_p1_coarse.setValue(0)
-        self.slider_p1_coarse.valueChanged.connect(self.process_data)
-
-        self.slider_p1_fine = QSlider(Qt.Orientation.Horizontal)
-        self.slider_p1_fine.setRange(-50, 50)
-        self.slider_p1_fine.setValue(0)
-        self.slider_p1_fine.valueChanged.connect(self.process_data)
-        self.input_p1 = QLineEdit("0.0")
-        self.input_p1.setFixedWidth(50)
-        self.input_p1.editingFinished.connect(self.update_phase_from_text)
-
-        self.input_points = QLineEdit("2048")
-        self.input_points.editingFinished.connect(self.process_data)
-
-        self.combo_apod = QComboBox()
-        self.combo_apod.addItems(["Sine Bell (sp)", "Exponential (em)"])
-        self.combo_apod.currentIndexChanged.connect(self.update_apod_ui)
-        self.combo_apod.currentIndexChanged.connect(self.process_data)
-
-        self.input_lb = QLineEdit("5.0")
-        self.input_lb.editingFinished.connect(self.process_data)
-
-        self.input_off = QLineEdit("0.35")
-        self.input_off.editingFinished.connect(self.process_data)
-
-        self.input_end = QLineEdit("0.98")
-        self.input_end.editingFinished.connect(self.process_data)
-
-        self.input_pow = QLineEdit("2.0")
-        self.input_pow.editingFinished.connect(self.process_data)
-
-        self.input_int_start = QLineEdit("9.5")
-        self.input_int_start.editingFinished.connect(self.process_data)
-        self.input_int_end = QLineEdit("7.5")
-        self.input_int_end.editingFinished.connect(self.process_data)
-
-        layout_t1.addRow("P0 Coarse:", self.slider_p0_coarse)
-        layout_t1.addRow(
-            "P0 Fine (+/- 5):",
-            self.create_slider_layout(self.slider_p0_fine, self.input_p0),
-        )
-        layout_t1.addRow("P1 Coarse:", self.slider_p1_coarse)
-        layout_t1.addRow(
-            "P1 Fine (+/- 5):",
-            self.create_slider_layout(self.slider_p1_fine, self.input_p1),
-        )
-        layout_t1.addRow(QLabel("<b>Apodization & ZF</b>"))
-        layout_t1.addRow("Function:", self.combo_apod)
-        layout_t1.addRow("Points (ZF):", self.input_points)
-        layout_t1.addRow("Line Broadening (Hz):", self.input_lb)
-        layout_t1.addRow("Sine Offset:", self.input_off)
-        layout_t1.addRow("Sine End:", self.input_end)
-        layout_t1.addRow("Sine Power:", self.input_pow)
-        layout_t1.addRow(QLabel("<b>Integration Range</b>"))
-        layout_t1.addRow("Start (ppm):", self.input_int_start)
-        layout_t1.addRow("End (ppm):", self.input_int_end)
-
-        layout_t1.addRow(QLabel("<b>Baseline Correction</b>"))
-        self.btn_pick_bl = QPushButton("Pick Nodes")
-        self.btn_pick_bl.setCheckable(True)
-        self.btn_pick_bl.clicked.connect(self.toggle_picking)
-        self.btn_clear_bl = QPushButton("Clear Nodes")
-        self.btn_clear_bl.clicked.connect(self.clear_baseline)
-        layout_bl = QHBoxLayout()
-        layout_bl.addWidget(self.btn_pick_bl)
-        layout_bl.addWidget(self.btn_clear_bl)
-        layout_t1.addRow(layout_bl)
-
-        tab1.setLayout(layout_t1)
-
-        self.update_apod_ui()
+        self.tab_processing = ProcessingTab()
+        self.tab_processing.param_changed.connect(self.process_data)
+        self.tab_processing.pick_nodes_toggled.connect(self.toggle_picking)
+        self.tab_processing.clear_nodes_clicked.connect(self.clear_baseline)
+        self.tab_processing.input_p0.editingFinished.connect(self.update_phase_from_text)
+        self.tab_processing.input_p1.editingFinished.connect(self.update_phase_from_text)
 
         # Tab 2: Fitting
-        tab2 = QWidget()
-        layout_t2 = QFormLayout()
-        self.input_field = QLineEdit("600")
-        self.input_csa = QLineEdit("160")
-        self.input_angle = QLineEdit("17")
-        self.input_s2 = QLineEdit("1.0")
-        self.input_bootstraps = QLineEdit("1000")
-        self.chk_sliding = QCheckBox("Sliding Window Analysis")
-        self.btn_fit = QPushButton("Calculate Tau_c")
-        self.btn_fit.clicked.connect(self.run_fitting)
-        self.btn_export_fit = QPushButton("Export Relaxation Data")
-        self.btn_export_fit.clicked.connect(self.export_fit_data)
-        self.btn_export_sliding = QPushButton("Export Sliding Window Data")
-        self.btn_export_sliding.clicked.connect(self.export_sliding_data)
-        self.lbl_results = QLabel("Results will appear here.")
-        self.lbl_results.setWordWrap(True)
+        self.tab_fitting = FittingTab()
+        self.tab_fitting.fit_requested.connect(self.run_fitting)
+        self.tab_fitting.export_fit_requested.connect(self.export_fit_data)
+        self.tab_fitting.export_sliding_requested.connect(self.export_sliding_data)
+        self.tab_fitting.export_report_requested.connect(self.export_pdf_report)
 
-        layout_t2.addRow("Field Strength (MHz):", self.input_field)
-        layout_t2.addRow("CSA (ppm):", self.input_csa)
-        layout_t2.addRow("CSA Angle (deg):", self.input_angle)
-        layout_t2.addRow("Order Parameter (S2):", self.input_s2)
-        layout_t2.addRow("Bootstraps:", self.input_bootstraps)
-        layout_t2.addRow(self.chk_sliding)
-        layout_t2.addRow(self.btn_fit)
-        layout_t2.addRow(self.btn_export_fit)
-        layout_t2.addRow(self.btn_export_sliding)
-        layout_t2.addRow(self.lbl_results)
-        tab2.setLayout(layout_t2)
-
-        panel3.addTab(tab1, "Processing")
-        panel3.addTab(tab2, "Fitting")
+        panel3.addTab(self.tab_processing, "Processing")
+        panel3.addTab(self.tab_fitting, "Fitting")
 
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.addWidget(panel1)
+        main_splitter.addWidget(self.panel_experiment)
         main_splitter.addWidget(splitter_center)
         main_splitter.addWidget(panel3)
         main_splitter.setSizes([400, 500, 300])
         main_layout.addWidget(main_splitter)
-
-    def create_slider_layout(self, slider: QSlider, label: QWidget) -> QWidget:
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.addWidget(slider)
-        layout.addWidget(label)
-        layout.setContentsMargins(0, 0, 0, 0)
-        return widget
-
-    def update_apod_ui(self) -> None:
-        is_sp = self.combo_apod.currentText().startswith("Sine")
-        layout = self.input_off.parent().layout()
-        if isinstance(layout, QFormLayout):
-            layout.setRowVisible(self.input_lb, not is_sp)
-            layout.setRowVisible(self.input_off, is_sp)
-            layout.setRowVisible(self.input_end, is_sp)
-            layout.setRowVisible(self.input_pow, is_sp)
 
     def toggle_picking(self, checked: bool) -> None:
         self.picking_baseline = checked
@@ -345,26 +174,43 @@ class TractApp(QMainWindow):
             self.baseline_nodes.append(event.xdata)
             self.process_data()
 
+    def on_scroll(self, event) -> None:
+        if event.inaxes != self.canvas_spec.axes:
+            return
+
+        ax = self.canvas_spec.axes
+        ymin, ymax = ax.get_ylim()
+        mouse_y = event.ydata
+
+        # Zoom factor
+        factor = 0.8 if event.button == "up" else 1.2
+
+        new_ymin = mouse_y + (ymin - mouse_y) * factor
+        new_ymax = mouse_y + (ymax - mouse_y) * factor
+
+        ax.set_ylim(new_ymin, new_ymax)
+        self.canvas_spec.draw()
+
     def update_phase_from_text(self) -> None:
         try:
-            p0 = float(self.input_p0.text())
-            p1 = float(self.input_p1.text())
+            p0 = float(self.tab_processing.input_p0.text())
+            p1 = float(self.tab_processing.input_p1.text())
 
-            self.slider_p0_coarse.blockSignals(True)
-            self.slider_p0_fine.blockSignals(True)
-            self.slider_p1_coarse.blockSignals(True)
-            self.slider_p1_fine.blockSignals(True)
+            self.tab_processing.slider_p0_coarse.blockSignals(True)
+            self.tab_processing.slider_p0_fine.blockSignals(True)
+            self.tab_processing.slider_p1_coarse.blockSignals(True)
+            self.tab_processing.slider_p1_fine.blockSignals(True)
 
-            self.slider_p0_coarse.setValue(int(p0))
-            self.slider_p0_fine.setValue(int(round((p0 - int(p0)) * 10)))
+            self.tab_processing.slider_p0_coarse.setValue(int(p0))
+            self.tab_processing.slider_p0_fine.setValue(int(round((p0 - int(p0)) * 10)))
 
-            self.slider_p1_coarse.setValue(int(p1))
-            self.slider_p1_fine.setValue(int(round((p1 - int(p1)) * 10)))
+            self.tab_processing.slider_p1_coarse.setValue(int(p1))
+            self.tab_processing.slider_p1_fine.setValue(int(round((p1 - int(p1)) * 10)))
 
-            self.slider_p0_coarse.blockSignals(False)
-            self.slider_p0_fine.blockSignals(False)
-            self.slider_p1_coarse.blockSignals(False)
-            self.slider_p1_fine.blockSignals(False)
+            self.tab_processing.slider_p0_coarse.blockSignals(False)
+            self.tab_processing.slider_p0_fine.blockSignals(False)
+            self.tab_processing.slider_p1_coarse.blockSignals(False)
+            self.tab_processing.slider_p1_fine.blockSignals(False)
 
             self.process_data()
         except ValueError:
@@ -424,21 +270,21 @@ class TractApp(QMainWindow):
             ylim = self.canvas_spec.axes.get_ylim()
             has_zoom = len(self.canvas_spec.axes.lines) > 0
 
-            p0 = self.slider_p0_coarse.value() + (self.slider_p0_fine.value() / 10.0)
-            p1 = self.slider_p1_coarse.value() + (self.slider_p1_fine.value() / 10.0)
+            p0 = self.tab_processing.slider_p0_coarse.value() + (self.tab_processing.slider_p0_fine.value() / 10.0)
+            p1 = self.tab_processing.slider_p1_coarse.value() + (self.tab_processing.slider_p1_fine.value() / 10.0)
 
-            self.input_p0.setText(f"{p0:.1f}")
-            self.input_p1.setText(f"{p1:.1f}")
+            self.tab_processing.input_p0.setText(f"{p0:.1f}")
+            self.tab_processing.input_p1.setText(f"{p1:.1f}")
 
-            points = int(self.input_points.text())
+            points = int(self.tab_processing.input_points.text())
             apod_func = (
-                "sp" if self.combo_apod.currentText().startswith("Sine") else "em"
+                "sp" if self.tab_processing.combo_apod.currentText().startswith("Sine") else "em"
             )
-            lb = float(self.input_lb.text())
+            lb = float(self.tab_processing.input_lb.text())
 
-            off = float(self.input_off.text())
-            end = float(self.input_end.text())
-            pow_val = float(self.input_pow.text())
+            off = float(self.tab_processing.input_off.text())
+            end = float(self.tab_processing.input_end.text())
+            pow_val = float(self.tab_processing.input_pow.text())
 
             if self.current_idx >= 0:
                 self.datasets[self.current_idx]["p0"] = p0
@@ -505,8 +351,8 @@ class TractApp(QMainWindow):
 
             if self.selector:
                 try:
-                    s = float(self.input_int_start.text())
-                    e = float(self.input_int_end.text())
+                    s = float(self.tab_processing.input_int_start.text())
+                    e = float(self.tab_processing.input_int_end.text())
                     self.selector.extents = (min(s, e), max(s, e))
                 except ValueError:
                     pass
@@ -520,34 +366,34 @@ class TractApp(QMainWindow):
             return
         try:
             tb = self.datasets[self.current_idx]["handler"]
-            p0 = self.slider_p0_coarse.value() + (self.slider_p0_fine.value() / 10.0)
-            p1 = self.slider_p1_coarse.value() + (self.slider_p1_fine.value() / 10.0)
+            p0 = self.tab_processing.slider_p0_coarse.value() + (self.tab_processing.slider_p0_fine.value() / 10.0)
+            p1 = self.tab_processing.slider_p1_coarse.value() + (self.tab_processing.slider_p1_fine.value() / 10.0)
 
-            points = int(self.input_points.text())
+            points = int(self.tab_processing.input_points.text())
             apod_func = (
-                "sp" if self.combo_apod.currentText().startswith("Sine") else "em"
+                "sp" if self.tab_processing.combo_apod.currentText().startswith("Sine") else "em"
             )
-            lb = float(self.input_lb.text())
+            lb = float(self.tab_processing.input_lb.text())
 
-            off = float(self.input_off.text())
-            end_param = float(self.input_end.text())
-            pow_val = float(self.input_pow.text())
-            start_ppm = float(self.input_int_start.text())
-            end_ppm = float(self.input_int_end.text())
+            off = float(self.tab_processing.input_off.text())
+            end_param = float(self.tab_processing.input_end.text())
+            pow_val = float(self.tab_processing.input_pow.text())
+            start_ppm = float(self.tab_processing.input_int_start.text())
+            end_ppm = float(self.tab_processing.input_int_end.text())
 
             # Update physics constants
-            tb.CSA_15N = float(self.input_csa.text()) * 1e-6
-            tb.CSA_BOND_ANGLE = float(self.input_angle.text()) * np.pi / 180
-            s2_val = float(self.input_s2.text())
+            tb.CSA_15N = float(self.tab_fitting.input_csa.text()) * 1e-6
+            tb.CSA_BOND_ANGLE = float(self.tab_fitting.input_angle.text()) * np.pi / 180
+            s2_val = float(self.tab_fitting.input_s2.text())
 
             try:
-                n_boot = int(self.input_bootstraps.text())
+                n_boot = int(self.tab_fitting.input_bootstraps.text())
                 if n_boot < 10:
                     n_boot = 10
-                    self.input_bootstraps.setText("10")
+                    self.tab_fitting.input_bootstraps.setText("10")
             except ValueError:
                 n_boot = 1000
-                self.input_bootstraps.setText("1000")
+                self.tab_fitting.input_bootstraps.setText("1000")
 
             nodes_idx = []
             if self.baseline_nodes and tb.unit_converter:
@@ -568,7 +414,7 @@ class TractApp(QMainWindow):
                 nodes=nodes_idx,
             )
 
-            b0 = float(self.input_field.text()) if self.input_field.text() else None
+            b0 = float(self.tab_fitting.input_field.text()) if self.tab_fitting.input_field.text() else None
 
             tb.integrate_ppm(start_ppm, end_ppm)
             tb.calc_relaxation()
@@ -605,16 +451,16 @@ class TractApp(QMainWindow):
                 f"Rb: {tb.Rb:.2f} +/- {tb.err_Rb:.2f} Hz\n"
                 f"Tau_c: {tb.tau_c:.2f} +/- {tb.err_tau_c:.2f} ns"
             )
-            self.lbl_results.setText(res_text)
+            self.tab_fitting.lbl_results.setText(res_text)
 
             self.canvas_fit.axes.legend()
             self.canvas_fit.draw()
 
             self.update_table()
 
-            if self.chk_sliding.isChecked():
-                self.btn_fit.setEnabled(False)
-                self.lbl_results.setText(self.lbl_results.text() + "\nCalculating sliding window...")
+            if self.tab_fitting.chk_sliding.isChecked():
+                self.tab_fitting.btn_fit.setEnabled(False)
+                self.tab_fitting.lbl_results.setText(self.tab_fitting.lbl_results.text() + "\nCalculating sliding window...")
                 
                 self.thread = QThread()
                 self.worker = SlidingWindowWorker(
@@ -635,7 +481,7 @@ class TractApp(QMainWindow):
             QMessageBox.critical(self, "Fit Error", str(e))
 
     def on_sliding_finished(self, ppms, taus, errs, idx):
-        self.btn_fit.setEnabled(True)
+        self.tab_fitting.btn_fit.setEnabled(True)
         
         if 0 <= idx < len(self.datasets):
             self.datasets[idx]["sliding_results"] = (ppms, taus, errs)
@@ -654,11 +500,11 @@ class TractApp(QMainWindow):
             self.canvas_sliding.draw()
             self.tabs_results.setCurrentIndex(1)
             
-            current_text = self.lbl_results.text().replace("\nCalculating sliding window...", "")
-            self.lbl_results.setText(current_text)
+            current_text = self.tab_fitting.lbl_results.text().replace("\nCalculating sliding window...", "")
+            self.tab_fitting.lbl_results.setText(current_text)
 
     def on_sliding_error(self, msg):
-        self.btn_fit.setEnabled(True)
+        self.tab_fitting.btn_fit.setEnabled(True)
         QMessageBox.critical(self, "Sliding Window Error", msg)
 
     def export_table_to_csv(self) -> None:
@@ -669,29 +515,29 @@ class TractApp(QMainWindow):
             with open(path, "w", newline="") as f:
                 writer = csv.writer(f)
                 headers = []
-                for col in range(self.table_data.columnCount()):
-                    item = self.table_data.horizontalHeaderItem(col)
+                for col in range(self.panel_experiment.table_data.columnCount()):
+                    item = self.panel_experiment.table_data.horizontalHeaderItem(col)
                     headers.append(item.text() if item else "")
                 writer.writerow(headers)
-                for row in range(self.table_data.rowCount()):
+                for row in range(self.panel_experiment.table_data.rowCount()):
                     row_data = [
-                        self.table_data.item(row, col).text()
-                        if self.table_data.item(row, col)
+                        self.panel_experiment.table_data.item(row, col).text()
+                        if self.panel_experiment.table_data.item(row, col)
                         else ""
-                        for col in range(self.table_data.columnCount())
+                        for col in range(self.panel_experiment.table_data.columnCount())
                     ]
                     writer.writerow(row_data)
         except Exception as e:
             QMessageBox.critical(self, "Export Error", str(e))
 
     def update_table(self) -> None:
-        self.table_data.blockSignals(True)
-        self.table_data.setRowCount(len(self.datasets))
+        self.panel_experiment.table_data.blockSignals(True)
+        self.panel_experiment.table_data.setRowCount(len(self.datasets))
         for i, ds in enumerate(self.datasets):
             # Experiment Name (Editable)
             item_name = QTableWidgetItem(ds["name"])
             item_name.setFlags(item_name.flags() | Qt.ItemFlag.ItemIsEditable)
-            self.table_data.setItem(i, 0, item_name)
+            self.panel_experiment.table_data.setItem(i, 0, item_name)
 
             # Temperature
             try:
@@ -700,7 +546,7 @@ class TractApp(QMainWindow):
                 temp = "N/A"
             item_temp = QTableWidgetItem(str(temp))
             item_temp.setFlags(item_temp.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_data.setItem(i, 1, item_temp)
+            self.panel_experiment.table_data.setItem(i, 1, item_temp)
 
             # Delays
             n_delays = (
@@ -708,7 +554,7 @@ class TractApp(QMainWindow):
             )
             item_delays = QTableWidgetItem(str(n_delays))
             item_delays.setFlags(item_delays.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_data.setItem(i, 2, item_delays)
+            self.panel_experiment.table_data.setItem(i, 2, item_delays)
 
             # Helper for values
             def get_val(attr):
@@ -719,25 +565,25 @@ class TractApp(QMainWindow):
             # Ra
             item_ra = QTableWidgetItem(get_val("Ra"))
             item_ra.setFlags(item_ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_data.setItem(i, 3, item_ra)
+            self.panel_experiment.table_data.setItem(i, 3, item_ra)
 
             # Rb
             item_rb = QTableWidgetItem(get_val("Rb"))
             item_rb.setFlags(item_rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_data.setItem(i, 4, item_rb)
+            self.panel_experiment.table_data.setItem(i, 4, item_rb)
 
             # Tau_C
             item_tau = QTableWidgetItem(get_val("tau_c"))
             item_tau.setFlags(item_tau.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_data.setItem(i, 5, item_tau)
+            self.panel_experiment.table_data.setItem(i, 5, item_tau)
 
             # Errors
             for col, attr in enumerate(["err_Ra", "err_Rb", "err_tau_c"], start=6):
                 item_err = QTableWidgetItem(get_val(attr))
                 item_err.setFlags(item_err.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.table_data.setItem(i, col, item_err)
+                self.panel_experiment.table_data.setItem(i, col, item_err)
 
-        self.table_data.blockSignals(False)
+        self.panel_experiment.table_data.blockSignals(False)
 
     def on_table_double_click(self, row: int, col: int) -> None:
         if col == 0:
@@ -751,7 +597,7 @@ class TractApp(QMainWindow):
             if row < len(self.datasets):
                 self.datasets[row]["name"] = new_name
                 if row == self.current_idx:
-                    self.current_experiment.setText(new_name)
+                    self.panel_experiment.current_experiment.setText(new_name)
 
     def switch_dataset(self, index: int) -> None:
         if index < 0 or index >= len(self.datasets):
@@ -765,38 +611,38 @@ class TractApp(QMainWindow):
         ds = self.datasets[index]
         tb = ds["handler"]
 
-        self.current_experiment.setText(ds["name"])
+        self.panel_experiment.current_experiment.setText(ds["name"])
 
         # Update Field Strength from parameters
         try:
-            self.input_field.setText("{:.2f}".format(tb.attributes["acqus"]["SFO1"]))
+            self.tab_fitting.input_field.setText("{:.2f}".format(tb.attributes["acqus"]["SFO1"]))
         except (KeyError, AttributeError):
             pass
 
-        self.slider_p0_coarse.blockSignals(True)
-        self.slider_p0_fine.blockSignals(True)
-        self.slider_p1_coarse.blockSignals(True)
-        self.slider_p1_fine.blockSignals(True)
+        self.tab_processing.slider_p0_coarse.blockSignals(True)
+        self.tab_processing.slider_p0_fine.blockSignals(True)
+        self.tab_processing.slider_p1_coarse.blockSignals(True)
+        self.tab_processing.slider_p1_fine.blockSignals(True)
 
         p0 = ds["p0"]
-        self.slider_p0_coarse.setValue(int(p0))
-        self.slider_p0_fine.setValue(round((p0 - int(p0)) * 10))
-        self.input_p0.setText(f"{p0:.1f}")
+        self.tab_processing.slider_p0_coarse.setValue(int(p0))
+        self.tab_processing.slider_p0_fine.setValue(round((p0 - int(p0)) * 10))
+        self.tab_processing.input_p0.setText(f"{p0:.1f}")
 
         p1 = ds["p1"]
-        self.slider_p1_coarse.setValue(int(p1))
-        self.slider_p1_fine.setValue(round((p1 - int(p1)) * 10))
-        self.input_p1.setText(f"{p1:.1f}")
+        self.tab_processing.slider_p1_coarse.setValue(int(p1))
+        self.tab_processing.slider_p1_fine.setValue(round((p1 - int(p1)) * 10))
+        self.tab_processing.input_p1.setText(f"{p1:.1f}")
 
-        self.slider_p0_coarse.blockSignals(False)
-        self.slider_p0_fine.blockSignals(False)
-        self.slider_p1_coarse.blockSignals(False)
-        self.slider_p1_fine.blockSignals(False)
+        self.tab_processing.slider_p0_coarse.blockSignals(False)
+        self.tab_processing.slider_p0_fine.blockSignals(False)
+        self.tab_processing.slider_p1_coarse.blockSignals(False)
+        self.tab_processing.slider_p1_fine.blockSignals(False)
 
         # Restore baseline nodes
         self.baseline_nodes = ds.get("baseline_nodes", [])
         self.picking_baseline = False
-        self.btn_pick_bl.setChecked(False)
+        self.tab_processing.btn_pick_bl.setChecked(False)
 
         self.canvas_spec.axes.clear()
         
@@ -829,8 +675,8 @@ class TractApp(QMainWindow):
                 drag_from_anywhere=True,
             )
             try:
-                s = float(self.input_int_start.text())
-                e = float(self.input_int_end.text())
+                s = float(self.tab_processing.input_int_start.text())
+                e = float(self.tab_processing.input_int_end.text())
                 self.selector.extents = (min(s, e), max(s, e))
             except ValueError:
                 pass
@@ -840,7 +686,7 @@ class TractApp(QMainWindow):
 
         # Update fit display
         self.canvas_fit.axes.clear()
-        self.lbl_results.setText("Results will appear here.")
+        self.tab_fitting.lbl_results.setText("Results will appear here.")
 
         if hasattr(tb, "Ra") and hasattr(tb, "popt_alpha"):
             try:
@@ -870,7 +716,7 @@ class TractApp(QMainWindow):
                     f"Rb: {tb.Rb:.2f} +/- {tb.err_Rb:.2f} Hz\n"
                     f"Tau_c: {tau_c_val:.2f} +/- {err_tau_c_val:.2f} ns"
                 )
-                self.lbl_results.setText(res_text)
+                self.tab_fitting.lbl_results.setText(res_text)
                 self.canvas_fit.axes.legend()
             except Exception:
                 pass
@@ -893,7 +739,7 @@ class TractApp(QMainWindow):
 
     def update_sample_name(self) -> None:
         if self.current_idx >= 0:
-            name = self.current_experiment.text()
+            name = self.panel_experiment.current_experiment.text()
             self.datasets[self.current_idx]["name"] = name
             self.update_table()
 
@@ -911,10 +757,10 @@ class TractApp(QMainWindow):
         menu.addAction(action_delete)
         menu.addSeparator()
         menu.addAction(action_export)
-        menu.exec(self.table_data.mapToGlobal(pos))
+        menu.exec(self.panel_experiment.table_data.mapToGlobal(pos))
 
     def change_experiment(self) -> None:
-        row = self.table_data.currentRow()
+        row = self.panel_experiment.table_data.currentRow()
         if row < 0:
             return
         folder = QFileDialog.getExistingDirectory(self, "Select Bruker Directory")
@@ -939,7 +785,7 @@ class TractApp(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to change data: {str(e)}")
 
     def delete_experiment(self) -> None:
-        row = self.table_data.currentRow()
+        row = self.panel_experiment.table_data.currentRow()
         if row < 0:
             return
         del self.datasets[row]
@@ -952,7 +798,7 @@ class TractApp(QMainWindow):
             self.canvas_fit.draw()
             self.canvas_sliding.axes.clear()
             self.canvas_sliding.draw()
-            self.current_experiment.clear()
+            self.panel_experiment.current_experiment.clear()
         elif row == self.current_idx:
             self.current_idx = -1  # Prevent saving state to wrong index
             self.switch_dataset(max(0, row - 1))
@@ -960,8 +806,8 @@ class TractApp(QMainWindow):
             self.current_idx -= 1
 
     def on_span_select(self, vmin: float, vmax: float) -> None:
-        self.input_int_start.setText(f"{vmax:.3f}")
-        self.input_int_end.setText(f"{vmin:.3f}")
+        self.tab_processing.input_int_start.setText(f"{vmax:.3f}")
+        self.tab_processing.input_int_end.setText(f"{vmin:.3f}")
 
     def open_help(self) -> None:
         QDesktopServices.openUrl(QUrl("https://github.com/debadutta-patra/pyTRACTnmr"))
@@ -1055,6 +901,64 @@ class TractApp(QMainWindow):
                 f.write(script_content)
                 
             QMessageBox.information(self, "Export Successful", f"Saved:\n{csv_path}\n{py_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))
+
+    def export_pdf_report(self) -> None:
+        if self.current_idx < 0:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(self, "Export PDF Report", "", "PDF Files (*.pdf)")
+        if not path:
+            return
+
+        if not path.endswith(".pdf"):
+            path += ".pdf"
+
+        try:
+            ds = self.datasets[self.current_idx]
+            tb = ds["handler"]
+
+            with PdfPages(path) as pdf:
+                # Page 1: Text Summary
+                fig_text = plt.figure(figsize=(8.5, 11))
+                txt = f"TRACT Analysis Report\n\n"
+                txt += f"Experiment: {ds['name']}\n"
+                txt += f"Path: {ds['path']}\n\n"
+
+                txt += "Processing Parameters:\n"
+                txt += f"  P0: {ds.get('p0', 0):.2f}\n"
+                txt += f"  P1: {ds.get('p1', 0):.2f}\n"
+                txt += f"  Points: {self.tab_processing.input_points.text()}\n"
+                txt += f"  Apodization: {self.tab_processing.combo_apod.currentText()}\n"
+                if "Sine" in self.tab_processing.combo_apod.currentText():
+                    txt += f"  Offset: {self.tab_processing.input_off.text()}\n"
+                    txt += f"  End: {self.tab_processing.input_end.text()}\n"
+                    txt += f"  Power: {self.tab_processing.input_pow.text()}\n"
+                else:
+                    txt += f"  LB: {self.tab_processing.input_lb.text()}\n"
+
+                txt += "\nFitting Parameters:\n"
+                txt += f"  Field: {self.tab_fitting.input_field.text()} MHz\n"
+                txt += f"  CSA: {self.tab_fitting.input_csa.text()} ppm\n"
+                txt += f"  Angle: {self.tab_fitting.input_angle.text()} deg\n"
+                txt += f"  S2: {self.tab_fitting.input_s2.text()}\n"
+                txt += f"  Bootstraps: {self.tab_fitting.input_bootstraps.text()}\n"
+
+                txt += "\nResults:\n"
+                txt += self.tab_fitting.lbl_results.text()
+
+                fig_text.text(0.1, 0.9, txt, fontsize=12, va='top', fontfamily='monospace')
+                pdf.savefig(fig_text)
+                plt.close(fig_text)
+
+                pdf.savefig(self.canvas_spec.figure, bbox_inches='tight')
+                pdf.savefig(self.canvas_fit.figure, bbox_inches='tight')
+                if "sliding_results" in ds:
+                    pdf.savefig(self.canvas_sliding.figure, bbox_inches='tight')
+
+            QMessageBox.information(self, "Export Successful", f"Report saved to:\n{path}")
 
         except Exception as e:
             QMessageBox.critical(self, "Export Error", str(e))
