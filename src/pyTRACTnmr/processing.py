@@ -276,7 +276,7 @@ class TractBruker:
         try:
             sw = self.attributes["acqus"]["SW_h"]
             return lb / sw
-        except KeyError, ZeroDivisionError:
+        except (KeyError, ZeroDivisionError):
             return lb
 
     def process_first_trace(

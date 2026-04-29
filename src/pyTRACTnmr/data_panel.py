@@ -29,10 +29,6 @@ class ExperimentPanel(QGroupBox):
         self.btn_load_demo = QPushButton("Load Demo Data")
         self.btn_load_demo.clicked.connect(self.load_demo_clicked.emit)
 
-        load_buttons_layout = QHBoxLayout()
-        load_buttons_layout.addWidget(self.btn_load)
-        load_buttons_layout.addWidget(self.btn_load_demo)
-
         self.current_experiment = QLineEdit()
         self.current_experiment.setPlaceholderText("Current Experiment")
         self.current_experiment.setReadOnly(True)
@@ -53,7 +49,7 @@ class ExperimentPanel(QGroupBox):
             ]
         )
         self.table_data.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
+            QHeaderView.ResizeMode.ResizeToContents
         )
         self.table_data.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_data.setEditTriggers(
@@ -63,7 +59,7 @@ class ExperimentPanel(QGroupBox):
         self.table_data.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         layout.addWidget(QLabel("Load Data:"))
-        layout.addLayout(load_buttons_layout)
+        layout.addWidget(self.btn_load)
         layout.addSpacing(10)
         layout.addWidget(QLabel("Current Experiment:"))
         layout.addWidget(self.current_experiment)
@@ -72,6 +68,7 @@ class ExperimentPanel(QGroupBox):
         layout.addStretch()
 
         layout_bottom = QHBoxLayout()
+        layout_bottom.addWidget(self.btn_load_demo)
         layout_bottom.addStretch()
         self.btn_help = QPushButton("?")
         self.btn_help.setFixedSize(20, 20)

@@ -23,7 +23,7 @@
 
 ### Prerequisites
 
-*   Python 3.14 or higher recommended (Though it is not tested it should run with earlier version of Python 3).
+*   Python 3.11 or higher recommended.
 *   [uv](https://github.com/astral-sh/uv) (optional, but recommended for building).
 
 ### Installation 
