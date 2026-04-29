@@ -1,0 +1,31 @@
+##TITLE= Audit trail, TopSpin 4.4.0
+##JCAMPDX= 5.01
+##ORIGIN= Bruker BioSpin GmbH & Co. KG
+##OWNER= mvdlab
+$$ /opt/nmrdata/DRB2/JBN_tr/30/audita.txt
+##AUDIT TRAIL=  $$ (NUMBER, WHEN, WHO, WHERE, PROCESS, VERSION, WHAT)
+(   1,<2026-02-17T10:26:19.547+0530>,<mvdlab>,<CZC8137NR1>,<cprserver>,<TopSpin 4.4.0>,
+      <new/edc EXPNO=30 PROCNO=1>)
+(   2,<2026-02-17T10:29:18.516+0530>,<mvdlab>,<CZC8137NR1>,<cprserver>,<TopSpin 4.4.0>,
+      <changed parameter F2 O3P to 116.500>)
+(   3,<2026-02-17T10:29:21.539+0530>,<mvdlab>,<CZC8137NR1>,<cprserver>,<TopSpin 4.4.0>,
+      <changed parameter F2 O3P to 117.250>)
+(   4,<2026-02-17T06:55:30.255+0000>,<mvdlab>,<CZC8137NR1>,<go4>,<TopSpin 4.4.0>,
+      <acquisition in progress>)
+(   5,<2026-02-17T11:03:02.148+0000>,<mvdlab>,<CZC8137NR1>,<go4>,<TopSpin 4.4.0>,
+      <created by zg on 'Avance Neo' (CZC8137NR1) by user 'mvdlab'
+       on data set with UUID 'a586e892-0bcd-11f1-a963-001395266a2d'
+       started at 2026-02-17 06:55:30.255 +0000, POWCHK enabled, PULCHK disabled,
+       completed at 2026-02-17 11:03:02.145 +0000
+       configuration hash MD5:
+       43 48 4C 6E A2 B7 7B CB A5 CB F9 08 9E ED 74 D4
+       double data hash MD5: 1K * 56
+       AF 81 8A 79 3B 57 DE 70 83 D8 0D 9B 01 6B CA 33>)
+(   6,<2026-02-17T16:29:39.667+0530>,<mvdlab>,<CZC8137NR1>,<sertoint>,<TopSpin 4.4.0>,
+      <sertoint
+       data hash MD5: 1K * 56
+       FD CF C4 93 C1 9F 2C 3D 7E A9 D4 F4 11 FF 77 C3>)
+##END=
+
+$$ hash MD5
+$$ 0C 5B 19 CA 41 9A 1F 2B AF 4F 09 3E 38 99 46 9A

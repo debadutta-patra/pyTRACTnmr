@@ -39,3 +39,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyTRACTnmr"]
+include = [
+    "src/pyTRACTnmr/demo_data/**",
+]

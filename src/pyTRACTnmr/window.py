@@ -1,5 +1,6 @@
 import os
 import csv
+import importlib.resources
 import numpy as np
 from typing import List, Dict, Any, Optional
 from PySide6.QtWidgets import (
@@ -72,6 +73,7 @@ class TractApp(QMainWindow):
         # --- Panel 1: Data Loading ---
         self.panel_experiment = ExperimentPanel()
         self.panel_experiment.load_clicked.connect(self.load_data)
+        self.panel_experiment.load_demo_clicked.connect(self.load_demo_data)
         self.panel_experiment.help_clicked.connect(self.open_help)
 
         # Connect table signals
@@ -442,6 +444,32 @@ class TractApp(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Bruker Directory")
         if folder:
             self.load_experiment(folder)
+
+    def load_demo_data(self) -> None:
+        try:
+            # Use importlib.resources to get a path to the bundled demo data.
+            # This is the modern approach (Python 3.9+) and handles packaged apps (e.g., in zip files).
+            demo_exp_resource = importlib.resources.files("pyTRACTnmr").joinpath(
+                "demo_data/1"
+            )
+
+            with importlib.resources.as_file(demo_exp_resource) as demo_path:
+                if demo_path.is_dir():
+                    self.load_experiment(str(demo_path))
+                else:
+                    # This case should ideally not happen if packaging is correct
+                    QMessageBox.critical(
+                        self,
+                        "Demo Data Error",
+                        f"Demo data resource found, but it is not a directory: {demo_path}",
+                    )
+
+        except (ModuleNotFoundError, FileNotFoundError) as e:
+            QMessageBox.critical(
+                self,
+                "Demo Data Error",
+                f"Could not find the demo dataset. It may not be installed correctly.\nError: {e}",
+            )
 
     def load_experiment(self, folder: str) -> None:
         try:

@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, Signal
 
 class ExperimentPanel(QGroupBox):
     load_clicked = Signal()
+    load_demo_clicked = Signal()
     help_clicked = Signal()
 
     def __init__(self, parent=None):
@@ -24,6 +25,13 @@ class ExperimentPanel(QGroupBox):
 
         self.btn_load = QPushButton("Load Bruker Directory")
         self.btn_load.clicked.connect(self.load_clicked.emit)
+
+        self.btn_load_demo = QPushButton("Load Demo Data")
+        self.btn_load_demo.clicked.connect(self.load_demo_clicked.emit)
+
+        load_buttons_layout = QHBoxLayout()
+        load_buttons_layout.addWidget(self.btn_load)
+        load_buttons_layout.addWidget(self.btn_load_demo)
 
         self.current_experiment = QLineEdit()
         self.current_experiment.setPlaceholderText("Current Experiment")
@@ -55,7 +63,7 @@ class ExperimentPanel(QGroupBox):
         self.table_data.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         layout.addWidget(QLabel("Load Data:"))
-        layout.addWidget(self.btn_load)
+        layout.addLayout(load_buttons_layout)
         layout.addSpacing(10)
         layout.addWidget(QLabel("Current Experiment:"))
         layout.addWidget(self.current_experiment)

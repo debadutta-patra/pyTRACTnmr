@@ -1,0 +1,10 @@
+VTC_REG_PID_SET_CH2=\
+<pid_settings type="probehead">
+   <standard_pid proportional="1.496" integral="63.502" differential="10.584" />
+   <temperature selftune="298.000" min="248.000" max="348.000" />
+   <vta type="4" sensor="1" connected_sensors="1" />
+   <gasflow selftune="535.000" min="481.500" max="588.500" />
+   <bcu_chiller type="1" selftune="1" min="0" max="1000" />
+   <pics checksum="" name="CRP2 ATM2 MOTOREINHEIT KPL." />
+   <checksum value="9D61801B" />
+</pid_settings>

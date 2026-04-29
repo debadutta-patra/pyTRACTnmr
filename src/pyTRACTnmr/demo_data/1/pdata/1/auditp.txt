@@ -1,0 +1,12 @@
+##TITLE= Audit trail, TopSpin 4.4.0
+##JCAMPDX= 5.01
+##ORIGIN= Bruker BioSpin GmbH & Co. KG
+##OWNER= mvdlab
+$$ /opt/nmrdata/DRB2/JBN_tr/30/pdata/1/auditp.txt
+##AUDIT TRAIL=  $$ (NUMBER, WHEN, WHO, WHERE, PROCESS, VERSION, WHAT)
+(   1,<2026-02-17T10:26:19.546+0530>,<mvdlab>,<CZC8137NR1>,<cprserver>,<TopSpin 4.4.0>,
+      <new/edc PROCNO=1>)
+##END=
+
+$$ hash MD5
+$$ 9D 9A 15 C4 63 DF F9 49 E6 23 2A A7 4D C0 BD 55
